@@ -119,6 +119,18 @@ def ensure_runtime_ready(log=print) -> dict:
         report["tools"]["PyQt5"] = False
         report["missing_required"].append("PyQt5")
 
+    try:
+        import faster_whisper  # noqa: F401
+        report["tools"]["faster-whisper"] = True
+    except Exception:
+        try:
+            import vosk  # noqa: F401
+            report["tools"]["vosk"] = True
+            report["tools"]["faster-whisper"] = False
+        except Exception:
+            report["tools"]["faster-whisper"] = False
+            report["tools"]["vosk"] = False
+
     return report
 
 
@@ -2008,14 +2020,14 @@ class App(QMainWindow):
             pass
         if hasattr(self, "cc_bar"):
             self.cc_bar.setVisible(on)
-            if on and not (self.cc_bar.text() or "").strip():
-                self.cc_bar.setText("Captions on — waiting for stream text…")
-            if not on:
+            if on:
+                self.cc_bar.setText("Starting live captions…")
+            else:
                 self.cc_bar.setText("")
-        if on and self.playing and getattr(self, "_stream_url", None):
-            self._start_icy(self._stream_url)
-        elif not on:
-            self._stop_icy()
+        if on and self.playing:
+            self._start_live_cc(getattr(self, "_stream_url", None))
+        else:
+            self._stop_live_cc()
         try:
             self._save_prefs()
         except Exception:
@@ -2024,21 +2036,46 @@ class App(QMainWindow):
     def _on_cc_text(self, text: str):
         if not getattr(self, "_cc_on", False):
             return
+        t = (text or "").strip()
+        if not t:
+            return
         if hasattr(self, "cc_bar"):
             self.cc_bar.setVisible(True)
-            self.cc_bar.setText(text or "")
-        # Also mirror into song line when it's live stream metadata
-        t = (text or "").strip()
-        if t and hasattr(self, "sp_song"):
-            self.sp_song.setText(t)
-            if hasattr(self, "song_l"):
-                self.song_l.setText(t)
+            # Keep a short rolling history of captions
+            prev = getattr(self, "_cc_history", [])
+            if not prev or prev[-1] != t:
+                prev = (prev + [t])[-3:]
+                self._cc_history = prev
+            self.cc_bar.setText("  ·  ".join(prev))
 
     def _set_cc_text(self, text: str):
         try:
             self.sig.cc.emit(text or "")
         except Exception:
             self._on_cc_text(text or "")
+
+    def _stop_live_cc(self):
+        """Stop live STT + ICY caption workers and ffmpeg capture."""
+        for attr in ("_cc_stop", "_icy_stop"):
+            ev = getattr(self, attr, None)
+            if ev is not None:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+        proc = getattr(self, "_cc_ffmpeg", None)
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=0.5)
+            except Exception:
+                pass
+            self._cc_ffmpeg = None
+        self._stop_icy()
 
     def _stop_icy(self):
         ev = getattr(self, "_icy_stop", None)
@@ -2049,8 +2086,205 @@ class App(QMainWindow):
                 pass
         self._icy_stop = None
 
+    def _get_stt_backend(self):
+        """Lazy-load open-source STT: faster-whisper (preferred) or vosk."""
+        if getattr(self, "_stt_backend", None):
+            return self._stt_backend
+
+        # 1) faster-whisper (https://github.com/SYSTRAN/faster-whisper)
+        try:
+            from faster_whisper import WhisperModel
+            self.sig.cc.emit("Loading Whisper model (tiny.en, first run downloads)…")
+            model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+            self._stt_backend = ("faster-whisper", model)
+            self.sig.log.emit("CC: using faster-whisper tiny.en")
+            return self._stt_backend
+        except Exception as e:
+            self.sig.log.emit(f"CC: faster-whisper unavailable ({e})")
+
+        # 2) vosk (https://github.com/alphacep/vosk-api)
+        try:
+            import json as _json
+            from vosk import Model, KaldiRecognizer, SetLogLevel
+            SetLogLevel(-1)
+            model_dir = BASE / "models" / "vosk-model-small-en-us-0.15"
+            if not model_dir.exists():
+                self.sig.cc.emit("Downloading Vosk English model (~40MB)…")
+                self._download_vosk_model(model_dir)
+            model = Model(str(model_dir))
+            self._stt_backend = ("vosk", model)
+            self.sig.log.emit("CC: using vosk small-en-us")
+            return self._stt_backend
+        except Exception as e:
+            self.sig.log.emit(f"CC: vosk unavailable ({e})")
+
+        self._stt_backend = None
+        return None
+
+    def _download_vosk_model(self, dest_dir: Path):
+        """Fetch official open-source Vosk small English model."""
+        import tarfile, tempfile
+        url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+        dest_dir = Path(dest_dir)
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        zip_path = dest_dir.parent / "vosk-model-small-en-us-0.15.zip"
+        req = urllib.request.Request(url, headers={"User-Agent": "SDR-Radio/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            zip_path.write_bytes(resp.read())
+        import zipfile
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(dest_dir.parent)
+        zip_path.unlink(missing_ok=True)
+        if not dest_dir.exists():
+            raise RuntimeError("Vosk model extract failed")
+
+    def _start_live_cc(self, stream_url: str | None = None):
+        """Start live open-source speech-to-text captions for the current audio."""
+        self._stop_live_cc()
+        if not getattr(self, "_cc_on", False):
+            return
+        if not self.playing:
+            self._set_cc_text("Play a station, then turn CC on")
+            return
+
+        stop = threading.Event()
+        self._cc_stop = stop
+        self._cc_history = []
+        url = stream_url or getattr(self, "_stream_url", None)
+
+        def work():
+            try:
+                backend = self._get_stt_backend()
+                if not backend:
+                    self.sig.cc.emit(
+                        "Install STT: pip install --user faster-whisper   "
+                        "(or: pip install --user vosk)"
+                    )
+                    self.sig.log.emit(
+                        "CC needs faster-whisper or vosk — run: "
+                        "python3 -m pip install --user faster-whisper"
+                    )
+                    return
+
+                kind, model = backend
+                # Capture live audio: stream URL preferred, else system monitor (SDR)
+                ffmpeg_cmd = None
+                if url:
+                    ffmpeg_cmd = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error",
+                        "-reconnect", "1", "-reconnect_streamed", "1",
+                        "-reconnect_delay_max", "5",
+                        "-i", url,
+                        "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
+                    ]
+                else:
+                    # SDR / local audio via PulseAudio monitor
+                    sink = "default"
+                    try:
+                        r = subprocess.run(
+                            ["pactl", "get-default-sink"],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        if r.returncode == 0 and (r.stdout or "").strip():
+                            sink = (r.stdout or "").strip() + ".monitor"
+                        else:
+                            sink = "default"
+                    except Exception:
+                        sink = "default"
+                    ffmpeg_cmd = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error",
+                        "-f", "pulse", "-i", sink,
+                        "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
+                    ]
+
+                import shutil
+                if not shutil.which("ffmpeg"):
+                    self.sig.cc.emit("ffmpeg required for live CC")
+                    return
+
+                self.sig.cc.emit("Listening…")
+                proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+                self._cc_ffmpeg = proc
+
+                # ~3.5s windows for near-live captions
+                sample_rate = 16000
+                window_sec = 3.5
+                chunk_bytes = int(sample_rate * 2 * window_sec)
+                import numpy as np
+
+                if kind == "vosk":
+                    from vosk import KaldiRecognizer
+                    rec = KaldiRecognizer(model, sample_rate)
+                    rec.SetWords(False)
+
+                while not stop.is_set() and getattr(self, "playing", False):
+                    raw = proc.stdout.read(chunk_bytes) if proc.stdout else b""
+                    if not raw:
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.05)
+                        continue
+                    if len(raw) < sample_rate:  # <0.5s — skip
+                        continue
+
+                    text = ""
+                    if kind == "faster-whisper":
+                        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                        if float(np.max(np.abs(audio))) < 0.01:
+                            continue  # silence
+                        segments, _info = model.transcribe(
+                            audio,
+                            language="en",
+                            vad_filter=True,
+                            beam_size=1,
+                            condition_on_previous_text=False,
+                        )
+                        parts = [s.text.strip() for s in segments if s.text and s.text.strip()]
+                        text = " ".join(parts).strip()
+                    elif kind == "vosk":
+                        # Feed in smaller blocks for vosk
+                        step = 4000
+                        for i in range(0, len(raw), step):
+                            block = raw[i:i + step]
+                            if rec.AcceptWaveform(block):
+                                try:
+                                    import json as _json
+                                    j = _json.loads(rec.Result())
+                                    text = (j.get("text") or "").strip()
+                                except Exception:
+                                    text = ""
+                        if not text:
+                            try:
+                                import json as _json
+                                j = _json.loads(rec.PartialResult())
+                                text = (j.get("partial") or "").strip()
+                            except Exception:
+                                text = ""
+
+                    if text and len(text) > 1:
+                        self.sig.cc.emit(text)
+
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            except Exception as e:
+                if not stop.is_set():
+                    self.sig.cc.emit(f"CC error: {e}")
+                    self.sig.log.emit(f"CC error: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+        # ICY metadata as optional extra line (not primary captions)
+        if url:
+            self._start_icy(url)
+
     def _start_icy(self, url: str):
-        """Read ICY stream metadata (live titles / 'subtitles') in background."""
+        """Optional: also watch ICY StreamTitle (metadata), not speech."""
         self._stop_icy()
         if not url or not getattr(self, "_cc_on", False):
             return
@@ -2061,10 +2295,7 @@ class App(QMainWindow):
             try:
                 req = urllib.request.Request(
                     url,
-                    headers={
-                        "Icy-MetaData": "1",
-                        "User-Agent": "SDR-Radio/1.0",
-                    },
+                    headers={"Icy-MetaData": "1", "User-Agent": "SDR-Radio/1.0"},
                 )
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     meta_int = 0
@@ -2076,7 +2307,6 @@ class App(QMainWindow):
                                 meta_int = 0
                             break
                     if meta_int <= 0:
-                        self.sig.cc.emit("No live captions on this stream")
                         return
                     last = ""
                     while not stop.is_set() and getattr(self, "playing", False):
@@ -2096,16 +2326,19 @@ class App(QMainWindow):
                             text = meta.decode("utf-8", "ignore")
                         except Exception:
                             text = meta.decode("latin-1", "ignore")
-                        m = re.search(r"StreamTitle='([^']*)'", text)
-                        if not m:
-                            m = re.search(r'StreamTitle="([^"]*)"', text)
+                        m = re.search(r"StreamTitle='([^']*)'", text) or re.search(
+                            r'StreamTitle="([^"]*)"', text
+                        )
                         title = (m.group(1).strip() if m else "").strip()
-                        if title and title != last:
+                        # Only surface ICY if STT is quiet — prefer speech captions
+                        if title and title != last and title.lower() not in (
+                            (getattr(self, "_current_station", "") or "").lower(),
+                        ):
                             last = title
-                            self.sig.cc.emit(title)
-            except Exception as e:
-                if not stop.is_set():
-                    self.sig.cc.emit(f"CC: {e}" if str(e) else "CC unavailable")
+                            # Prefix so user can tell metadata from speech
+                            self.sig.log.emit(f"ICY: {title}")
+            except Exception:
+                pass
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2163,7 +2396,7 @@ class App(QMainWindow):
 
     def stop(self):
         try:
-            self._stop_icy()
+            self._stop_live_cc()
         except Exception:
             pass
         self._stream_url = None
@@ -2336,8 +2569,7 @@ class App(QMainWindow):
 
         self.log("stream: started OK")
         if getattr(self, "_cc_on", False):
-            self._set_cc_text(f"♪ {name}")
-            self._start_icy(url)
+            self._start_live_cc(url)
         if bool(self.cfg.get("song_id", True)):
             self.start_id()
 
@@ -2389,7 +2621,8 @@ class App(QMainWindow):
         except Exception:
             pass
         if getattr(self, "_cc_on", False):
-            self._set_cc_text(f"♪ {name or f'{freq:.1f} MHz'}")
+            # Live STT from system audio while SDR plays
+            QTimer.singleShot(900, lambda: self._start_live_cc(None))
 
         if mode == "wbfm":
             cmd = (f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast "

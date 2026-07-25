@@ -55,9 +55,22 @@ else
   git clone "$REPO_URL" "$DIR"
 fi
 
-echo "==> Python packages"
-python3 -m pip install --user -U pip setuptools wheel >/dev/null 2>&1 || true
-python3 -m pip install --user -r "$DIR/requirements.txt"
+echo "==> Python venv + packages (UI + live CC speech-to-text)"
+# venv with system-site-packages so apt python3-pyqt5 is still visible
+if [ ! -x "$DIR/.venv/bin/python" ]; then
+  python3 -m venv --system-site-packages "$DIR/.venv"
+fi
+"$DIR/.venv/bin/pip" install -U pip setuptools wheel >/dev/null 2>&1 || true
+"$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" || true
+"$DIR/.venv/bin/pip" install "numpy>=1.22" "faster-whisper>=1.0.0" || {
+  echo "WARN: faster-whisper failed — installing vosk fallback"
+  "$DIR/.venv/bin/pip" install vosk || true
+}
+"$DIR/.venv/bin/python" -c "from PyQt5.QtWidgets import QApplication; print('  PyQt5 OK')" 2>/dev/null \
+  || echo "  WARN: PyQt5 not importable in venv (install python3-pyqt5)"
+"$DIR/.venv/bin/python" -c "import faster_whisper; print('  faster-whisper OK')" 2>/dev/null \
+  || "$DIR/.venv/bin/python" -c "import vosk; print('  vosk OK')" 2>/dev/null \
+  || echo "  WARN: no STT engine — CC live captions will prompt to install"
 
 echo "==> Launchers"
 chmod +x "$DIR/install.sh" "$DIR/sdr-control" "$DIR/reset-dongle.sh" \
@@ -85,12 +98,17 @@ EOF
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR" 2>/dev/null || true
 
 echo "==> First-run seed (config, stations, default art, logos)"
-python3 "$DIR/sdr-control-ui.py" --setup-only
+if [ -x "$DIR/.venv/bin/python" ]; then
+  "$DIR/.venv/bin/python" "$DIR/sdr-control-ui.py" --setup-only
+else
+  python3 "$DIR/sdr-control-ui.py" --setup-only
+fi
 
 echo
 echo "========================================"
 echo "  Ready."
-echo "  Run:  python3 $DIR/sdr-control-ui.py"
-echo "  Or:   sdr-control   # if ~/.local/bin is on PATH"
+echo "  Run:  $DIR/sdr-control"
+echo "    or: $DIR/.venv/bin/python $DIR/sdr-control-ui.py"
+echo "    or: python3 $DIR/sdr-control-ui.py   # GUI only; CC needs venv STT"
 echo "  Reset dongle:  sudo $DIR/reset-dongle.sh"
 echo "========================================"

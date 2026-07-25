@@ -23,10 +23,10 @@ bash ~/SDR-Tools/install.sh
 
 This installs system packages, Python deps, desktop launcher, seeds config/stations, and caches internet station logos.
 
-### Run
+### Run (use the launcher so the venv + live CC works)
 
 ```bash
-python3 ~/SDR-Tools/sdr-control-ui.py
+~/SDR-Tools/sdr-control
 ```
 
 Or if `~/.local/bin` is on your `PATH`:
@@ -35,12 +35,17 @@ Or if `~/.local/bin` is on your `PATH`:
 sdr-control
 ```
 
+Direct (system Python — GUI works; CC needs the venv):
+
+```bash
+~/SDR-Tools/.venv/bin/python ~/SDR-Tools/sdr-control-ui.py
+```
+
 ### Setup only (no GUI)
 
 ```bash
-python3 ~/SDR-Tools/sdr-control-ui.py --setup-only
+~/SDR-Tools/.venv/bin/python ~/SDR-Tools/sdr-control-ui.py --setup-only
 ```
-
 ---
 
 ## What you get after install
@@ -50,8 +55,23 @@ python3 ~/SDR-Tools/sdr-control-ui.py --setup-only
 | GUI | `python3-pyqt5` |
 | Internet radio | `ffmpeg` (`ffplay`) or `mpv` |
 | SDR live tune | `rtl-sdr` (`rtl_fm`) + `sox` (`play`) |
+| Live **CC** captions (speech→text) | `faster-whisper` (pip) + `ffmpeg` — open source [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
 | Song ID (optional) | `songrec` and/or `fpcalc` (AcoustID) |
 | Genius lyrics (optional) | `lyricsgenius` + `genius_api_key.txt` |
+
+### Live CC (subtitles)
+
+Uses open-source **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** (Whisper `tiny.en`) to **transcribe live speech** from the stream (not station name).
+
+1. Run via `~/SDR-Tools/sdr-control` (venv).
+2. Play a station (e.g. **BBC World Service**).
+3. Press **CC** next to play.
+4. First time downloads the speech model (~75MB), then captions update every few seconds.
+
+```bash
+# Reinstall STT into the app venv if needed:
+~/SDR-Tools/.venv/bin/pip install -U faster-whisper numpy
+```
 
 Keys (optional): put API keys in:
 

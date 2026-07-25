@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .DS_Store
 *.lock
+.venv/
+models/
 radio_config.json
 stations.json
 song_history.json

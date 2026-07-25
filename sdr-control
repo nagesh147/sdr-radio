@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
-# Launcher — always runs the install under ~/SDR-Tools
-exec python3 "${SDR_DIR:-$HOME/SDR-Tools}/sdr-control-ui.py" "$@"
+# Prefer project venv (faster-whisper etc.), fall back to system python3
+DIR="${SDR_DIR:-$HOME/SDR-Tools}"
+if [ -x "$DIR/.venv/bin/python" ]; then
+  exec "$DIR/.venv/bin/python" "$DIR/sdr-control-ui.py" "$@"
+fi
+exec python3 "$DIR/sdr-control-ui.py" "$@"

@@ -1,5 +1,13 @@
 # Core (also install system package python3-pyqt5 on Debian/Ubuntu)
 PyQt5>=5.15
+numpy>=1.22
+
+# Live CC / speech-to-text (open source)
+# https://github.com/SYSTRAN/faster-whisper
+faster-whisper>=1.0.0
+
+# Optional fallback STT — https://github.com/alphacep/vosk-api
+# vosk>=0.3.45
 
 # Optional — Genius lyrics fallback (only used if genius_api_key.txt exists)
 lyricsgenius>=3.0.0
