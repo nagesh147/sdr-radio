@@ -388,6 +388,15 @@ class App(QMainWindow):
         SNIP.mkdir(parents=True, exist_ok=True)
         ART.mkdir(parents=True, exist_ok=True)
 
+        # Always kill leftover audio on every launch
+        try:
+            subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.25)
+        except Exception:
+            pass
+
+
         self.lrc_timer = QTimer(self)
         self.lrc_timer.timeout.connect(self._tick_lrc)
 
@@ -500,7 +509,7 @@ class App(QMainWindow):
         self.btn_show_right.setIconSize(QSize(18, 18))
         self.btn_show_right.setToolTip("Show side panel")
         self.btn_show_right.setVisible(False)
-        self.btn_show_right.clicked.connect(lambda: self.toggle_right(True))
+        self.btn_show_right.clicked.connect(self._toggle_right_sidebar)
         edge.addWidget(self.btn_show_right)
         ml.addLayout(edge)
 
@@ -788,6 +797,12 @@ class App(QMainWindow):
 
         rl.addWidget(self.right_stack, 1)
         self._right_expanded = True
+        # Start collapsed
+        self.right_panel.setMinimumWidth(52)
+        self.right_panel.setMaximumWidth(56)
+        for b in self.nav_btns:
+            b.setText("")
+        self.right_stack.setVisible(False)
         self.split.addWidget(right)
 
 
@@ -825,6 +840,7 @@ class App(QMainWindow):
 
         self.statusBar().showMessage("Ready")
         QTimer.singleShot(400, self._apply_startup)
+        QTimer.singleShot(500, self._restore_right_panel)
         QToolTip.setFont(QFont("Sans", 10))
         if self.cats.count():
             self.cats.setCurrentRow(0)
@@ -935,6 +951,7 @@ class App(QMainWindow):
         self.scale.dark = self.dark
         self._style()
         self.scale.update()
+        self._save_prefs()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1236,6 +1253,30 @@ class App(QMainWindow):
         self._sync_band(s["freq"])
         self.play(s["freq"], s["mode"], s["name"])
 
+
+    def _station_art_path(self, name):
+        """Return path to station default art if it exists."""
+        if not name:
+            return None
+        base = ART / "stations"
+        candidates = [
+            base / f"{name.replace(' ', '_')}.png",
+            base / f"{name.replace(' ', '_')}.jpg",
+            base / "default.png",
+        ]
+        for p in candidates:
+            if p.exists() and p.stat().st_size > 200:
+                return str(p)
+        return None
+
+    def _show_station_art(self, name=""):
+        path = self._station_art_path(name)
+        if path:
+            self.show_art(path)
+        else:
+            self.art.setPixmap(QPixmap())
+            self.art.setText("♪")
+
     def clear_song(self):
         self.song = None
         self.genius_url = None
@@ -1264,19 +1305,30 @@ class App(QMainWindow):
             self.clear_song()
 
     def stop(self):
-        self.stop_id()
         try:
-            if self.rtl and self.rtl.poll() is None:
+            self.stop_id()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "rtl", None) is not None and self.rtl.poll() is None:
                 self.rtl.terminate()
                 try:
                     self.rtl.wait(timeout=0.4)
                 except Exception:
-                    self.rtl.kill()
+                    try:
+                        self.rtl.kill()
+                    except Exception:
+                        pass
         except Exception:
             pass
-        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
         self.rtl = None
-        self.set_playing(False)
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.set_playing(False)
+        except Exception:
+            self.playing = False
+
 
     def toggle(self):
         if self.playing:
@@ -1286,16 +1338,30 @@ class App(QMainWindow):
 
 
     def _soft_reset_dongle(self):
-        """Release a stuck RTL-SDR without physical unplug."""
+        """Release a stuck RTL-SDR. Tries helper script first, then sysfs."""
         self.log("Soft-resetting dongle…")
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.2)
+
+        # Prefer the passwordless helper script if present
+        helper = BASE / "reset-dongle.sh"
+        if helper.exists():
+            try:
+                r = subprocess.run(["sudo", str(helper)],
+                                   capture_output=True, text=True, timeout=8)
+                if r.returncode == 0:
+                    self.log("Dongle reset via helper script")
+                    time.sleep(0.5)
+                    return True
+            except Exception as e:
+                self.log(f"helper reset: {e}")
+
+        # Fallback: sysfs re-authorize (needs permissions)
         try:
-            subprocess.run(["killall", "-9", "rtl_fm", "play"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.2)
-            # Re-authorize the USB device
             for d in Path("/sys/bus/usb/devices").glob("*/idVendor"):
                 try:
-                    if d.read_text().strip() == "0bda":
+                    if d.read_text().strip().lower() == "0bda":
                         dev = d.parent
                         auth = dev / "authorized"
                         if auth.exists():
@@ -1308,8 +1374,39 @@ class App(QMainWindow):
                 except Exception:
                     continue
         except Exception as e:
-            self.log(f"soft reset: {e}")
+            self.log(f"sysfs reset: {e}")
+
+        # Last resort: reload drivers
+        try:
+            subprocess.run(["sudo", "modprobe", "-r", "dvb_usb_rtl28xxu", "rtl2832", "rtl2830"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            time.sleep(0.3)
+            subprocess.run(["sudo", "modprobe", "dvb_usb_rtl28xxu"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            self.log("Drivers reloaded")
+            time.sleep(0.5)
+            return True
+        except Exception as e:
+            self.log(f"modprobe reset: {e}")
         return False
+
+    def _dongle_ok(self):
+        """Non-invasive check: rtl_test -t with short timeout."""
+        try:
+            r = subprocess.run(
+                ["timeout", "2", "rtl_test", "-t"],
+                capture_output=True, text=True, timeout=4
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            # Success if we see device info and no "Failed to open"
+            if "Failed to open" in out or "usb_open error" in out:
+                return False
+            if "Found" in out or "Using device" in out or r.returncode == 0:
+                return True
+            return False
+        except Exception:
+            return False
+
 
     def play(self, freq, mode, name="", quick=False):
         """Start or retune. Auto soft-resets the dongle if it is locked."""
@@ -1397,6 +1494,7 @@ class App(QMainWindow):
             self.btn_auto_side.setChecked(on)
         self.on_auto(on)
         self.toast.show_msg("Auto Song ID " + ("on" if on else "off"))
+        self._save_prefs()
 
     def on_auto(self, on):
         self.cfg["song_id"] = on
@@ -1434,7 +1532,8 @@ class App(QMainWindow):
         self.id_thread = None
 
     def _id_loop(self):
-        for _ in range(12):
+        # Short initial delay so we start identifying quickly
+        for _ in range(4):
             if self.id_stop.is_set() or not self.playing:
                 return
             time.sleep(1)
@@ -1444,7 +1543,8 @@ class App(QMainWindow):
                     self._submit(self._identify())
                 except Exception:
                     pass
-            for _ in range(45):
+            # Re-check every 30s instead of 45s
+            for _ in range(30):
                 if self.id_stop.is_set() or not self.playing:
                     return
                 time.sleep(1)
@@ -1456,6 +1556,8 @@ class App(QMainWindow):
         if self.id_busy:
             self.toast.show_msg("Already identifying…")
             return
+        self.song_l.setText("Listening…")
+        self.toast.show_msg("Identifying…")
         try:
             self._submit(self._identify())
         except Exception as e:
@@ -1468,7 +1570,7 @@ class App(QMainWindow):
         try:
             self.sig.status.emit("Listening…")
             wav = str(SNIP / "sdr_song_id.wav")
-            ok = await asyncio.to_thread(self.capture, wav, 12)
+            ok = await asyncio.to_thread(self.capture, wav, 7)
             if not ok:
                 self.sig.status.emit("Capture failed")
                 return
@@ -1484,7 +1586,7 @@ class App(QMainWindow):
         finally:
             self.id_busy = False
 
-    def capture(self, path, sec=12):
+    def capture(self, path, sec=7):
         try:
             Path(path).unlink(missing_ok=True)
         except Exception:
@@ -1599,7 +1701,7 @@ class App(QMainWindow):
             if not text and getattr(self, "gn_key", ""):
                 try:
                     import lyricsgenius
-                    g = lyricsgenius.Genius(self.gn_key, verbose=False, remove_section_headers=True, timeout=12)
+                    g = lyricsgenius.Genius(self.gn_key, verbose=False, remove_section_headers=True, timeout=8)
                     s = g.search_song(song.get("title", ""), song.get("artist", ""))
                     if s and s.lyrics:
                         lines = s.lyrics.splitlines()
@@ -1629,7 +1731,7 @@ class App(QMainWindow):
         for i, (ts, _) in enumerate(self.lrc):
             if ts <= el:
                 idx = i
-        new = "\n".join(f"{'▶ ' if i==idx else '  '}{ln}" for i, (_, ln) in enumerate(self.lrc))
+        new = "\n".join(ln for _, ln in self.lrc)
         if self.lyrics.toPlainText() != new:
             self.lyrics.setPlainText(new)
 
@@ -1834,6 +1936,10 @@ class App(QMainWindow):
             self.lyrics_panel.setMinimumHeight(0)
             self.lyrics_panel.setMaximumHeight(0)
             self.lyrics.setMinimumHeight(0)
+        try:
+            self._save_prefs()
+        except Exception:
+            pass
 
 
     def lyrics_now(self):
@@ -1851,7 +1957,7 @@ class App(QMainWindow):
             if not text and self.gn_key:
                 try:
                     import lyricsgenius
-                    g = lyricsgenius.Genius(self.gn_key, verbose=False, remove_section_headers=True, timeout=15)
+                    g = lyricsgenius.Genius(self.gn_key, verbose=False, remove_section_headers=True, timeout=8)
                     song = g.search_song(title, artist)
                     if song and song.lyrics:
                         lines = song.lyrics.splitlines()
@@ -1974,7 +2080,157 @@ class App(QMainWindow):
         subprocess.run(["killall", "-9", "sdrpp", "satdump", "satdump-ui", "AIS-catcher"], stderr=subprocess.DEVNULL)
         self.toast.show_msg("All SDR processes stopped")
 
+
+    def _ensure_dongle_ready(self):
+        """Called once at startup – reset only if clearly locked."""
+        self.log("Checking dongle…")
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+
+        try:
+            r = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=3)
+            if "0bda" not in r.stdout.lower() and "rtl283" not in r.stdout.lower():
+                self.log("No RTL-SDR seen in lsusb")
+                return
+        except Exception:
+            pass
+
+        if self._dongle_ok():
+            self.log("Dongle OK")
+            return
+
+        self.log("Dongle busy – soft reset")
+        self._soft_reset_dongle()
+        time.sleep(0.6)
+        if self._dongle_ok():
+            self.log("Dongle recovered")
+        else:
+            self.log("Dongle still locked – unplug/replug once if play fails")
+
+
+
+
+    def _restore_right_panel(self):
+        """Open right sidebar by default (or per saved prefs)."""
+        try:
+            want = True
+            if isinstance(getattr(self, "cfg", None), dict):
+                want = bool(self.cfg.get("right_visible", True))
+            rp = getattr(self, "right_panel", None)
+            if rp is None:
+                return
+            if want:
+                rp.setMinimumWidth(200)
+                rp.setMaximumWidth(300)
+                rp.setVisible(True)
+                try:
+                    self.split.widget(2).setVisible(True)
+                except Exception:
+                    pass
+                self._right_expanded = True
+                labels = ["  Library", "  Tools", "  Log"]
+                for b, lab in zip(getattr(self, "nav_btns", []), labels):
+                    b.setText(lab)
+                if hasattr(self, "right_stack"):
+                    self.right_stack.setVisible(True)
+                if hasattr(self, "btn_show_right"):
+                    self.btn_show_right.setVisible(False)
+                if hasattr(self, "split"):
+                    total = max(900, self.split.width())
+                    self.split.setSizes([int(total * 0.28), int(total * 0.50), int(total * 0.22)])
+            else:
+                self._restore_right_panel()
+        except Exception as e:
+            try:
+                self.log(f"restore right: {e}")
+            except Exception:
+                pass
+
+    def _collapse_right_on_start(self):
+        """Fully hide right sidebar – no icon rail."""
+        try:
+            self._right_expanded = True
+            rp = getattr(self, "right_panel", None)
+            if rp is not None:
+                rp.setVisible(False)
+                rp.setMinimumWidth(0)
+                rp.setMaximumWidth(0)
+            if hasattr(self, "split"):
+                try:
+                    self.split.widget(2).setVisible(False)
+                except Exception:
+                    pass
+                total = max(900, self.split.width())
+                self.split.setSizes([int(total * 0.34), int(total * 0.66), 0])
+            # Show the reopen button in the center top-right
+            if hasattr(self, "btn_show_right"):
+                self.btn_show_right.setVisible(True)
+        except Exception as e:
+            try:
+                self.log(f"hide right: {e}")
+            except Exception:
+                pass
+
+
+
+    def _load_prefs(self):
+        """Restore user settings from config."""
+        p = self.cfg if isinstance(self.cfg, dict) else {}
+        # Theme
+        self.dark = bool(p.get("dark", False))
+        # Auto song ID
+        if hasattr(self, "btn_auto_side"):
+            on = bool(p.get("song_id", True))
+            self.btn_auto_side.setChecked(on)
+            self.cfg["song_id"] = on
+        # Gain already loaded earlier
+        # Lyrics panel
+        self._lyrics_open = bool(p.get("lyrics_open", False))
+        # Right sidebar visible/expanded
+        self._right_expanded = bool(p.get("right_expanded", True))
+        self._right_visible = bool(p.get("right_visible", True))
+
+    def _save_prefs(self):
+        """Persist current UI choices."""
+        try:
+            self.cfg["dark"] = bool(getattr(self, "dark", False))
+            self.cfg["song_id"] = bool(self.cfg.get("song_id", True))
+            self.cfg["lyrics_open"] = bool(
+                getattr(self, "lyrics_toggle", None) and self.lyrics_toggle.isChecked()
+            )
+            self.cfg["right_expanded"] = bool(getattr(self, "_right_expanded", False))
+            rp = getattr(self, "right_panel", None)
+            self.cfg["right_visible"] = bool(rp is not None and rp.isVisible())
+            if hasattr(self, "gain"):
+                self.cfg["gain"] = int(self.gain.value())
+            # Remember last frequency / mode / station
+            if hasattr(self, "freq"):
+                self.cfg["last_freq"] = float(self.freq.value())
+            if hasattr(self, "mode"):
+                self.cfg["last_mode"] = self.mode.currentText()
+            if getattr(self, "_current_station", None):
+                self.cfg["last_station"] = self._current_station
+            save_json(CONFIG, self.cfg)
+        except Exception as e:
+            try:
+                self.log(f"save prefs: {e}")
+            except Exception:
+                pass
+
     def _apply_startup(self):
+        try:
+            self._load_prefs()
+        except Exception:
+            pass
+        try:
+            self._restore_right_panel()
+        except Exception:
+            pass
+        try:
+            self._ensure_dongle_ready()
+        except Exception as e:
+            self.log(f"dongle check: {e}")
         try:
             su = self.cfg.get("startup") or {}
         except Exception:
@@ -2030,27 +2286,63 @@ class App(QMainWindow):
         self.right_stack.setCurrentIndex(idx)
 
     def _toggle_right_sidebar(self):
-        self._right_expanded = not getattr(self, "_right_expanded", True)
-        if self._right_expanded:
-            self.right_panel.setMinimumWidth(200)
-            self.right_panel.setMaximumWidth(280)
-            labels = ["  Library", "  Tools", "  Log", "  Theme"]
-            for b, lab in zip(self.nav_btns, labels):
+        rp = getattr(self, "right_panel", None)
+        if rp is None:
+            return
+        # Currently hidden → show expanded
+        if not rp.isVisible() or rp.maximumWidth() == 0:
+            rp.setMinimumWidth(200)
+            rp.setMaximumWidth(300)
+            rp.setVisible(True)
+            try:
+                self.split.widget(2).setVisible(True)
+            except Exception:
+                pass
+            self._right_expanded = True
+            labels = ["  Library", "  Tools", "  Log"]
+            for b, lab in zip(getattr(self, "nav_btns", []), labels):
                 b.setText(lab)
-            self.right_stack.setVisible(True)
-        else:
-            self.right_panel.setMinimumWidth(52)
-            self.right_panel.setMaximumWidth(56)
-            for b in self.nav_btns:
-                b.setText("")
-            self.right_stack.setVisible(False)
-            for b in self.nav_btns:
-                b.setText("")   # icon only
+            if hasattr(self, "right_stack"):
+                self.right_stack.setVisible(True)
+            if hasattr(self, "split"):
+                total = max(900, self.split.width())
+                self.split.setSizes([int(total * 0.28), int(total * 0.50), int(total * 0.22)])
+            return
+
+        # Visible → fully hide
+        self._right_expanded = True
+        rp.setVisible(False)
+        rp.setMinimumWidth(0)
+        rp.setMaximumWidth(0)
+        try:
+            self.split.widget(2).setVisible(False)
+        except Exception:
+            pass
+        if hasattr(self, "split"):
+            total = max(900, self.split.width())
+            self.split.setSizes([int(total * 0.34), int(total * 0.66), 0])
+
 
     def closeEvent(self, e):
-        self.stop()
-        if self.aio_loop:
-            self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
+        try:
+            self._save_prefs()
+        except Exception:
+            pass
+        try:
+            self.stop()
+        except Exception:
+            pass
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if getattr(self, "aio_loop", None):
+                self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
+        except Exception:
+            pass
+        try:
+            LOCK.unlink(missing_ok=True)
+        except Exception:
+            pass
         e.accept()
 
 
@@ -2062,8 +2354,12 @@ def main():
     w = App()
     w.show()
     def cleanup():
-        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
-        LOCK.unlink(missing_ok=True)
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            LOCK.unlink(missing_ok=True)
+        except Exception:
+            pass
     app.aboutToQuit.connect(cleanup)
     sys.exit(app.exec_())
 

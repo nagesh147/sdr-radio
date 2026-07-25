@@ -1,9 +1,11 @@
 # SDR Radio
 
-RTL-SDR radio player for Linux.
-
-## Install
-curl -fsSL https://raw.githubusercontent.com/nagesh147/sdr-radio/main/install.sh | bash
+PyQt5 RTL-SDR controller: tune, song ID, lyrics, stations, tools.
 
 ## Run
-python3 ~/SDR-Tools/sdr-control-ui.py
+
+    python3 sdr-control-ui.py
+
+If dongle locks: sudo ./reset-dongle.sh
+
+Config: radio_config.json, stations.json, icons/
