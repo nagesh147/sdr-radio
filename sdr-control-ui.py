@@ -54,6 +54,115 @@ def acquire_single_instance_lock():
         pass
 
 
+def write_minimal_png(path: Path, w: int = 64, h: int = 64, rgb=(44, 44, 46)) -> None:
+    """Write a solid-color PNG without external deps (seed default art)."""
+    import struct, zlib
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    r, g, b = rgb
+    raw = b"".join(b"\x00" + bytes([r, g, b]) * w for _ in range(h))
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(
+            ">I", zlib.crc32(tag + data) & 0xFFFFFFFF
+        )
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+    path.write_bytes(png)
+
+
+def ensure_runtime_ready(log=print) -> dict:
+    """Create runtime dirs/files so a fresh install can launch immediately."""
+    report = {"dirs": [], "files": [], "tools": {}, "missing_required": []}
+    for d in (BASE, ICONS, ART, ART / "stations", SNIP):
+        d.mkdir(parents=True, exist_ok=True)
+        report["dirs"].append(str(d))
+
+    default_art = ART / "stations" / "default.png"
+    if not default_art.exists() or default_art.stat().st_size < 50:
+        write_minimal_png(default_art, 256, 256, (44, 44, 46))
+        report["files"].append(str(default_art))
+
+    # Seed config + stations from defaults if missing (load_json also creates)
+    try:
+        load_json(CONFIG, {"gain": 35, "song_id": True, "cc": False, "dark": True})
+        load_json(STATIONS_F, DEFAULT_STATIONS)
+        load_json(HIST_F, [])
+        load_json(FAV_F, [])
+        report["files"].extend([str(CONFIG), str(STATIONS_F)])
+    except Exception as e:
+        log(f"seed config: {e}")
+
+    # Prefer shipping icons from repo; if empty tree, note it
+    if not any(ICONS.glob("*.png")):
+        log(f"WARN: no icons in {ICONS} — re-clone/pull the repo")
+
+    import shutil
+    required = {
+        "python3": True,
+        "ffplay": True,   # internet radio
+        "play": True,     # sox — SDR audio
+        "rtl_fm": False,  # optional if internet-only
+    }
+    optional = ["mpv", "songrec", "fpcalc", "pactl", "ffmpeg", "curl"]
+    for tool, req in required.items():
+        ok = bool(shutil.which(tool))
+        report["tools"][tool] = ok
+        if req and not ok:
+            report["missing_required"].append(tool)
+    for tool in optional:
+        report["tools"][tool] = bool(shutil.which(tool))
+
+    try:
+        from PyQt5.QtWidgets import QApplication  # noqa: F401
+        report["tools"]["PyQt5"] = True
+    except Exception:
+        report["tools"]["PyQt5"] = False
+        report["missing_required"].append("PyQt5")
+
+    return report
+
+
+def setup_only() -> int:
+    """CLI: python3 sdr-control-ui.py --setup-only"""
+    print("SDR Radio — setup / first-run seed")
+    # DEFAULT_STATIONS is defined later at import time when this function is called
+    # after full module load — OK.
+    report = ensure_runtime_ready(log=print)
+    # Prefetch built-in internet logos (best-effort, network)
+    try:
+        (ART / "stations").mkdir(parents=True, exist_ok=True)
+        for name, url in INTERNET_STATION_ART.items():
+            slug = re.sub(r"[^\w\s-]", "", name.strip())
+            slug = re.sub(r"\s+", "_", slug).strip("_")[:80]
+            dest = ART / "stations" / f"{slug}.png"
+            if dest.exists() and dest.stat().st_size > 200:
+                print(f"  art ok  {dest.name}")
+                continue
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "SDR-Radio/1.0"})
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    data = resp.read()
+                if data and len(data) > 200:
+                    dest.write_bytes(data)
+                    print(f"  art got {dest.name}")
+                else:
+                    print(f"  art skip {name}")
+            except Exception as e:
+                print(f"  art fail {name}: {e}")
+    except Exception as e:
+        print(f"art prefetch: {e}")
+
+    print("Tools:")
+    for k, v in sorted(report["tools"].items()):
+        print(f"  {'OK' if v else 'MISS':4}  {k}")
+    if report["missing_required"]:
+        print("Missing required:", ", ".join(report["missing_required"]))
+        print("Run: bash install.sh   (or install packages from README)")
+        return 1
+    print("Setup complete — run: python3 ~/SDR-Tools/sdr-control-ui.py")
+    return 0
+
+
 from PyQt5.QtWidgets import (
     QMessageBox, QInputDialog, QMenu, QAbstractItemView,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -424,6 +533,13 @@ class App(QMainWindow):
         self.favs = load_json(FAV_F, [])
         self.ac_key = AC_KEY.read_text().strip() if AC_KEY.exists() else ""
         self.gn_key = GN_KEY.read_text().strip() if GN_KEY.exists() else ""
+        # First-run seed (dirs, default art, config) — safe if already present
+        try:
+            rep = ensure_runtime_ready(log=lambda m: None)
+            self._ready_report = rep
+        except Exception:
+            self._ready_report = {}
+
         SNIP.mkdir(parents=True, exist_ok=True)
         ART.mkdir(parents=True, exist_ok=True)
         (ART / "stations").mkdir(parents=True, exist_ok=True)
@@ -447,6 +563,13 @@ class App(QMainWindow):
         self._style()
         self._bind_shortcuts()
         self.log("Ready")
+        try:
+            miss = (self._ready_report or {}).get("missing_required") or []
+            if miss:
+                self.log("Missing tools: " + ", ".join(miss) + " — run: bash ~/SDR-Tools/install.sh")
+                self.toast.show_msg("Missing: " + ", ".join(miss))
+        except Exception:
+            pass
         try:
             self._sync_auto_id_tooltip()
         except Exception:
@@ -3855,6 +3978,15 @@ class App(QMainWindow):
 
 
 def main():
+    if "--setup-only" in sys.argv or "-s" in sys.argv:
+        raise SystemExit(setup_only())
+
+    # Seed runtime before GUI so first launch never crashes on missing dirs
+    try:
+        ensure_runtime_ready(log=lambda m: None)
+    except Exception:
+        pass
+
     acquire_single_instance_lock()
     app = QApplication(sys.argv)
     app.setApplicationName("SDR Radio")

@@ -2,7 +2,7 @@
 Version=1.0
 Type=Application
 Name=SDR Radio
-Comment=RTL-SDR radio player
+Comment=RTL-SDR + Internet radio player
 Exec=python3 %h/SDR-Tools/sdr-control-ui.py
 Icon=audio-headphones
 Terminal=false

@@ -1,1 +1,5 @@
+# Core (also install system package python3-pyqt5 on Debian/Ubuntu)
 PyQt5>=5.15
+
+# Optional — Genius lyrics fallback (only used if genius_api_key.txt exists)
+lyricsgenius>=3.0.0

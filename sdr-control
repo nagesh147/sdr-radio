@@ -1,2 +1,3 @@
-#!/bin/bash
-exec python3 "$HOME/SDR-Tools/sdr-control-ui.py" "$@"
+#!/usr/bin/env bash
+# Launcher — always runs the install under ~/SDR-Tools
+exec python3 "${SDR_DIR:-$HOME/SDR-Tools}/sdr-control-ui.py" "$@"
