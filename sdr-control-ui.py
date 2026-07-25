@@ -999,14 +999,9 @@ class App(QMainWindow):
         rowsp.addWidget(self.btn_cc)
         rowsp.addStretch()
         sp.addLayout(rowsp)
-        # Live CC subtitle strip under controls
-        self.cc_bar = QLabel("")
-        self.cc_bar.setObjectName("cc")
-        self.cc_bar.setAlignment(Qt.AlignCenter)
-        self.cc_bar.setWordWrap(True)
-        self.cc_bar.setMinimumHeight(36)
-        self.cc_bar.setVisible(bool(self.cfg.get("cc", False)))
-        sp.addWidget(self.cc_bar)
+        # CC text lives only in the right-pane Captions view (not under the player —
+        # a strip here was shifting/pushing the player UI when toggled).
+        self.cc_bar = None
         sp.addStretch(1)
         self.spotify_panel.setVisible(True)
         ml.addWidget(self.spotify_panel, 1)
@@ -2046,14 +2041,8 @@ class App(QMainWindow):
             save_json(CONFIG, self.cfg)
         except Exception:
             pass
-        if hasattr(self, "cc_bar"):
-            self.cc_bar.setVisible(on)
-            if on:
-                self.cc_bar.setText("Starting live captions…")
-            else:
-                self.cc_bar.setText("")
         if on:
-            # Open right pane Captions tab (like Lyrics)
+            # Open right Captions pane only — do not resize/shift the player
             try:
                 self._ensure_right_open_for_lyrics()
                 self._switch_right_tab(2)
@@ -2074,8 +2063,6 @@ class App(QMainWindow):
         self._cc_history = []
         if hasattr(self, "cc_view"):
             self.cc_view.clear()
-        if hasattr(self, "cc_bar"):
-            self.cc_bar.setText("" if not getattr(self, "_cc_on", False) else "…")
 
     def _on_cc_text(self, text: str):
         if not getattr(self, "_cc_on", False):
@@ -2083,25 +2070,17 @@ class App(QMainWindow):
         t = (text or "").strip()
         if not t:
             return
-        # Skip pure status lines flooding the panel once listening has started
         prev = getattr(self, "_cc_history", [])
         if prev and prev[-1] == t:
             return
         prev = prev + [t]
-        # Keep a longer transcript in the right panel (like lyrics)
         if len(prev) > 200:
             prev = prev[-200:]
         self._cc_history = prev
 
-        # Compact strip under the player (last few lines)
-        if hasattr(self, "cc_bar"):
-            self.cc_bar.setVisible(True)
-            self.cc_bar.setText("  ·  ".join(prev[-3:]))
-
-        # Full transcript in right Captions pane
+        # Transcript only in right Captions pane (player layout stays fixed)
         if hasattr(self, "cc_view"):
             stamp = datetime.now().strftime("%H:%M:%S")
-            # Drop the initial placeholder
             cur = (self.cc_view.toPlainText() or "").strip()
             if cur.startswith("Starting live captions"):
                 self.cc_view.clear()
@@ -4069,8 +4048,6 @@ class App(QMainWindow):
             self.btn_cc.blockSignals(True)
             self.btn_cc.setChecked(self._cc_on)
             self.btn_cc.blockSignals(False)
-        if hasattr(self, "cc_bar"):
-            self.cc_bar.setVisible(self._cc_on)
         # Right sidebar visible/expanded
         self._right_expanded = bool(p.get("right_expanded", True))
         self._right_visible = bool(p.get("right_visible", True))
