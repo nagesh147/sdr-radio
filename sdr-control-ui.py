@@ -150,6 +150,7 @@ class Toast(QLabel):
 class FreqScale(QWidget):
     """Center needle, sparse ticks, cached background for speed."""
     changed = pyqtSignal(float)
+    released = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -268,6 +269,10 @@ class FreqScale(QWidget):
 
     def mouseReleaseEvent(self, _e):
         self._drag = False
+        try:
+            self.released.emit(self._val)
+        except Exception:
+            pass
 
     def wheelEvent(self, e):
         step = 0.1 if e.angleDelta().y() > 0 else -0.1
@@ -581,6 +586,7 @@ class App(QMainWindow):
         tl.addLayout(tr)
         self.scale = FreqScale()
         self.scale.changed.connect(self.on_scale)
+        self.scale.released.connect(lambda _v: self.commit_tune())
         tl.addWidget(self.scale)
         self.freq = QDoubleSpinBox()
         self.freq.setDecimals(1); self.freq.setSingleStep(0.1)
@@ -588,6 +594,7 @@ class App(QMainWindow):
         self.freq.setSuffix(" MHz")
         self.freq.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.freq.valueChanged.connect(self.on_freq)
+        self.freq.editingFinished.connect(lambda: self.on_freq(self.freq.value()))
         tl.addWidget(self.freq)
         ml.addWidget(tun)
 
@@ -928,7 +935,6 @@ class App(QMainWindow):
         finally:
             self._band_lock = False
 
-
     def _wire_band(self):
         try:
             self.band.activated.disconnect()
@@ -972,7 +978,7 @@ class App(QMainWindow):
                 hit = (n, float(lo), float(hi), mode)
                 break
         if not hit:
-            print("[BAND] unknown", repr(name), flush=True)
+            print('[BAND] unknown', name, flush=True)
             return
         n, lo, hi, mode = hit
         mid = round(((lo + hi) / 2.0) * 10) / 10.0
@@ -1000,8 +1006,14 @@ class App(QMainWindow):
             self.log(str(ex))
 
     def on_freq(self, v):
+        """Spinbox moved — update UI only (no RF restart)."""
         v = float(v)
-        self.scale.setValue(v)
+        try:
+            self.scale.blockSignals(True)
+            self.scale.setValue(v)
+            self.scale.blockSignals(False)
+        except Exception:
+            pass
         m = mode_for_freq(v)
         if self.mode.currentText() != m:
             self.mode.blockSignals(True)
@@ -1009,7 +1021,16 @@ class App(QMainWindow):
             self.mode.blockSignals(False)
         self._sync_band(v)
 
+    def commit_tune(self):
+        v = float(self.freq.value())
+        m = self.mode.currentText() or mode_for_freq(v)
+        try:
+            self.play(v, m, "%.1f MHz" % v)
+        except Exception as ex:
+            self.log(str(ex))
+
     def on_scale(self, v):
+        """Scale dragged — needle/spinbox only; RF after drag ends."""
         v = round(float(v), 1)
         self.freq.blockSignals(True)
         self.freq.setValue(v)
@@ -1020,7 +1041,26 @@ class App(QMainWindow):
             self.mode.setCurrentText(m)
             self.mode.blockSignals(False)
         self._sync_band(v)
+        # short debounce only as fallback if mouseRelease not wired
+        if not hasattr(self, "_tune_timer"):
+            from PyQt5.QtCore import QTimer
+            self._tune_timer = QTimer(self)
+            self._tune_timer.setSingleShot(True)
+            self._tune_timer.timeout.connect(self.commit_tune)
+        self._tune_timer.start(180)
 
+
+    def _retune_from_ui(self):
+        if not getattr(self, "playing", False):
+            return
+        pair = getattr(self, "_pending_tune", None)
+        if not pair:
+            return
+        v, m = pair
+        try:
+            self.play(v, m, f"{v:.1f} MHz")
+        except Exception as ex:
+            self.log(str(ex))
 
 
     def load_cat(self, cat):
@@ -1165,10 +1205,26 @@ class App(QMainWindow):
 
     def play_item(self, item):
         s = item.data(Qt.UserRole)
-        if not s: return
-        self.freq.setValue(s["freq"]); self.scale.setValue(s["freq"])
-        self.mode.setCurrentText(s["mode"]); self._sync_band(s["freq"])
-        self.play(s["freq"], s["mode"], s["name"])
+        if not s:
+            return
+        freq = float(s.get("freq", 0))
+        mode = s.get("mode") or mode_for_freq(freq)
+        name = s.get("name") or ("%.1f" % freq)
+        self.freq.blockSignals(True)
+        self.freq.setValue(freq)
+        self.freq.blockSignals(False)
+        try:
+            self.scale.setValue(freq)
+        except Exception:
+            pass
+        self.mode.blockSignals(True)
+        self.mode.setCurrentText(mode)
+        self.mode.blockSignals(False)
+        try:
+            self._sync_band(freq)
+        except Exception:
+            pass
+        self.play(freq, mode, name)
 
     def clear_song(self):
         self.song = None; self.genius_url = None
@@ -1186,35 +1242,90 @@ class App(QMainWindow):
             self.btn_play.setText("▶"); self.title.setText("Not playing"); self.sub.setText("Pick a station")
             self.clear_song()
 
+
+    def _kill_audio(self):
+        import subprocess, os, signal
+        proc = getattr(self, "rtl", None)
+        if proc is not None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=0.5)
+            except Exception:
+                pass
+            self.rtl = None
+        subprocess.run(
+            ["killall", "-9", "rtl_fm", "play"],
+            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        )
+
     def stop(self):
-        self.stop_id()
-        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
-        self.rtl = None; self.set_playing(False)
+        try:
+            self.stop_id()
+        except Exception:
+            pass
+        self._kill_audio()
+        try:
+            self.set_playing(False)
+        except Exception:
+            self.playing = False
+
 
     def toggle(self):
         if self.playing: self.stop()
         else: self.play(self.freq.value(), self.mode.currentText(), f"{self.freq.value():.1f} MHz")
 
     def play(self, freq, mode, name=""):
-        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
-        time.sleep(0.3); self.stop_id(); self.clear_song()
-        gain = int(self.gain.value()); self.cfg["gain"] = gain; save_json(CONFIG, self.cfg)
-        hz = int(round(freq * 1e6))
-        detail = f"{freq:.3f} MHz · {mode.upper()} · gain {gain}"
-        self.set_playing(True, name or f"{freq:.1f} MHz", detail)
-        self.log(f"▶ {name} · {detail}")
+        import subprocess, time
+        self._kill_audio()
+        time.sleep(0.25)
+        try:
+            self.stop_id()
+        except Exception:
+            pass
+        try:
+            self.clear_song()
+        except Exception:
+            pass
+        gain = int(self.gain.value()) if hasattr(self, "gain") else 35
+        try:
+            self.cfg["gain"] = gain
+            save_json(CONFIG, self.cfg)
+        except Exception:
+            pass
+        hz = int(round(float(freq) * 1e6))
+        mode = (mode or "wbfm").lower().strip()
+        detail = "%.3f MHz · %s · gain %s" % (float(freq), mode.upper(), gain)
+        self.playing = True
+        try:
+            self.set_playing(True, name or ("%.1f MHz" % float(freq)), detail)
+        except Exception:
+            pass
+        self.log("▶ %s · %s" % (name, detail))
         if mode == "wbfm":
-            cmd = f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast -r 32000 -l 0 -E deemp - | play -r 32000 -t raw -e signed -b 16 -c 1 -q -"
+            cmd = "rtl_fm -f %d -M wbfm -g %d -s 170k -A fast -r 32000 -l 0 -E deemp - | play -r 32000 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
         elif mode == "am":
-            cmd = f"rtl_fm -f {hz} -M am -g {gain} -s 12000 -r 12000 -l 0 - | play -r 12000 -t raw -e signed -b 16 -c 1 -q -"
+            cmd = "rtl_fm -f %d -M am -g %d -s 12000 -r 12000 -l 0 - | play -r 12000 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
         else:
-            cmd = f"rtl_fm -f {hz} -M fm -g {gain} -s 22050 -r 22050 -l 0 - | play -r 22050 -t raw -e signed -b 16 -c 1 -q -"
-        try: self.rtl = subprocess.Popen(cmd, shell=True)
-        except Exception as e: self.log(str(e)); self.set_playing(False); return
-        if bool(self.cfg.get("song_id", True)): self.start_id()
-        else:
-            threading.Thread(target=lambda: (time.sleep(8), self.playing and self.id_now()), daemon=True).start()
-
+            cmd = "rtl_fm -f %d -M fm -g %d -s 22050 -r 22050 -l 0 - | play -r 22050 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
+        self.log("CMD: " + cmd[:100])
+        try:
+            self.rtl = subprocess.Popen(cmd, shell=True, start_new_session=True)
+            self.log("rtl pid %s" % self.rtl.pid)
+        except Exception as e:
+            self.log("play error: " + str(e))
+            self.playing = False
+            return
+        if bool(getattr(self, "cfg", {}).get("song_id", True)):
+            try:
+                self.start_id()
+            except Exception:
+                pass
 
     def _toggle_auto_side(self):
         on = not bool(self.cfg.get("song_id", True))
@@ -1815,8 +1926,16 @@ class App(QMainWindow):
         self.toast.show_msg("All SDR processes stopped")
 
     def closeEvent(self, e):
-        self.stop()
-        if self.aio_loop: self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
+        try:
+            self.stop_id()
+        except Exception:
+            pass
+        self._kill_audio()
+        try:
+            if getattr(self, "aio_loop", None):
+                self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
+        except Exception:
+            pass
         e.accept()
 
 
@@ -1827,7 +1946,8 @@ def main():
     app.setStyle("Fusion")
     w = App(); w.show()
     def cleanup():
-        subprocess.run(["killall","-9","rtl_fm","play"], stderr=subprocess.DEVNULL)
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "aplay", "paplay"],
+                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         LOCK.unlink(missing_ok=True)
     app.aboutToQuit.connect(cleanup)
     sys.exit(app.exec_())
