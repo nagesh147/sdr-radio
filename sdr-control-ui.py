@@ -27,24 +27,42 @@ def _alive(pid):
     except OSError:
         return False
 
-if LOCK.exists():
+
+def acquire_single_instance_lock():
+    """Only used at process start (main). Safe to re-import the file for in-process reload."""
+    force = os.environ.pop("SDR_FORCE_START", "") == "1"
+    if force:
+        try:
+            LOCK.unlink(missing_ok=True)
+        except Exception:
+            pass
+    elif LOCK.exists():
+        try:
+            o = int(LOCK.read_text().strip())
+            # Same PID is fine (e.g. re-exec); only block a different live process
+            if o != os.getpid() and _alive(o):
+                sys.exit(0)
+            LOCK.unlink(missing_ok=True)
+        except Exception:
+            try:
+                LOCK.unlink(missing_ok=True)
+            except Exception:
+                pass
     try:
-        o = int(LOCK.read_text().strip())
-        if _alive(o):
-            sys.exit(0)
-        LOCK.unlink(missing_ok=True)
+        LOCK.write_text(str(os.getpid()))
     except Exception:
-        LOCK.unlink(missing_ok=True)
-LOCK.write_text(str(os.getpid()))
+        pass
+
 
 from PyQt5.QtWidgets import (
     QMessageBox, QInputDialog, QMenu, QAbstractItemView,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QFrame, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
     QDoubleSpinBox, QTabWidget, QSplitter, QSizePolicy, QAbstractSpinBox, QToolTip,
+    QShortcut, QAction,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QUrl, QSize
-from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor, QIcon
+from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor, QIcon, QKeySequence
 
 def load_icon(name: str) -> QIcon:
     p = ICONS / f"{name}.png"
@@ -53,6 +71,14 @@ def load_icon(name: str) -> QIcon:
     return QIcon()
 
 DEFAULT_STATIONS = {
+    "Internet": [
+        {"name": "Radio Mirchi Online", "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/MIR_HIN_BACCYC.mp3", "mode": "net"},
+        {"name": "BBC World Service", "url": "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service", "mode": "net"},
+        {"name": "NPR News", "url": "https://npr-ice.streamguys1.com/live.mp3", "mode": "net"},
+        {"name": "Lofi Hip Hop", "url": "https://streams.ilovemusic.de/iloveradio17.mp3", "mode": "net"},
+        {"name": "SomaFM Groove Salad", "url": "https://ice2.somafm.com/groovesalad-128-mp3", "mode": "net"},
+    ],
+
     "India FM": [
         {"name": "Big FM", "freq": 92.7, "mode": "wbfm"},
         {"name": "Red FM", "freq": 93.5, "mode": "wbfm"},
@@ -134,6 +160,7 @@ class Sig(QObject):
     status = pyqtSignal(str)
     lyrics = pyqtSignal(str)
     art = pyqtSignal(str)
+    net_list = pyqtSignal(list, str)  # stations, category_or_msg
 
 
 class Toast(QLabel):
@@ -378,6 +405,7 @@ class App(QMainWindow):
         self.sig.status.connect(self.on_status)
         self.sig.lyrics.connect(self.on_lyrics)
         self.sig.art.connect(self.show_art)
+        self.sig.net_list.connect(self._on_net_list)
 
         self.stations = self._clean_stations(load_json(STATIONS_F, DEFAULT_STATIONS))
         self.cfg = load_json(CONFIG, {"gain": 35, "song_id": True})
@@ -390,7 +418,7 @@ class App(QMainWindow):
 
         # Always kill leftover audio on every launch
         try:
-            subprocess.run(["killall", "-9", "rtl_fm", "play"],
+            subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.25)
         except Exception:
@@ -402,9 +430,199 @@ class App(QMainWindow):
 
         self._ui()
         self._style()
+        self._bind_shortcuts()
         self.log("Ready")
-        if self.cfg.get("song_id") and hasattr(self, "btn_auto_side"):
-            self.btn_auto_side.setChecked(True)
+        try:
+            self._sync_auto_id_tooltip()
+        except Exception:
+            pass
+
+    def _bind_shortcuts(self):
+        """Global keyboard shortcuts for reload (Ctrl+R / F5)."""
+        # Menu actions (ApplicationShortcut)
+        self.act_reload = QAction("Reload", self)
+        self.act_reload.setShortcuts([
+            QKeySequence("Ctrl+R"),
+            QKeySequence("Ctrl+Shift+R"),
+            QKeySequence(Qt.Key_F5),
+        ])
+        self.act_reload.setShortcutContext(Qt.ApplicationShortcut)
+        self.act_reload.triggered.connect(self.reload_app)
+        self.addAction(self.act_reload)
+
+        # Explicit shortcuts on the window + central widget
+        targets = [self]
+        try:
+            if self.centralWidget() is not None:
+                targets.append(self.centralWidget())
+        except Exception:
+            pass
+        self._reload_shortcuts = []
+        for seq in ("Ctrl+R", "Ctrl+Shift+R", "F5"):
+            for parent in targets:
+                sc = QShortcut(QKeySequence(seq), parent)
+                sc.setContext(Qt.ApplicationShortcut)
+                sc.setAutoRepeat(False)
+                sc.activated.connect(self.reload_app)
+                self._reload_shortcuts.append(sc)
+
+        # App-wide filter (handles ShortcutOverride + KeyPress)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            # Also intercept at QApplication.notify level via filter on app object
+            try:
+                app.installEventFilter(self)
+            except Exception:
+                pass
+
+    def _is_reload_key(self, ev) -> bool:
+        try:
+            key = ev.key()
+            mods = ev.modifiers()
+            if key == Qt.Key_F5:
+                return True
+            if key == Qt.Key_R and (mods & Qt.ControlModifier):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def keyPressEvent(self, e):
+        if self._is_reload_key(e):
+            e.accept()
+            self.reload_app()
+            return
+        super().keyPressEvent(e)
+
+    def reload_app(self):
+        """Ctrl+R / F5 — reload UI code in-process (app stays open)."""
+        if getattr(self, "_reloading", False):
+            return
+        self._reloading = True
+        self._closing_for_reload = True
+
+        try:
+            self.statusBar().showMessage("Reloading…", 3000)
+            self.log("Reloading UI…")
+            self.toast.show_msg("Reloading…")
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+        try:
+            self._save_prefs()
+        except Exception:
+            pass
+        try:
+            self.stop()
+        except Exception:
+            pass
+
+        # Remember window placement
+        geo = None
+        try:
+            geo = self.saveGeometry()
+        except Exception:
+            pass
+
+        script = str(BASE / "sdr-control-ui.py")
+        try:
+            if getattr(sys, "argv", None) and sys.argv[0] and os.path.isfile(os.path.abspath(sys.argv[0])):
+                script = os.path.abspath(sys.argv[0])
+            elif os.path.isfile(str(Path(__file__).resolve())):
+                script = str(Path(__file__).resolve())
+        except Exception:
+            pass
+
+        app = QApplication.instance()
+        try:
+            # Drop our app-wide key filter so the new window owns shortcuts
+            if app is not None:
+                try:
+                    app.removeEventFilter(self)
+                except Exception:
+                    pass
+
+            import importlib.util
+            # Unique module name so Python re-reads the file from disk
+            for k in list(sys.modules):
+                if k.startswith("sdr_control_ui_reload_"):
+                    try:
+                        del sys.modules[k]
+                    except Exception:
+                        pass
+            mod_name = f"sdr_control_ui_reload_{int(time.time() * 1000)}"
+            spec = importlib.util.spec_from_file_location(mod_name, script)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Cannot load {script}")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            spec.loader.exec_module(mod)
+
+            new = mod.App()
+            if geo is not None:
+                try:
+                    new.restoreGeometry(geo)
+                except Exception:
+                    pass
+            new.show()
+            new.raise_()
+            new.activateWindow()
+
+            # Keep a hard ref so GC doesn't drop the new window
+            if app is not None:
+                app._sdr_main = new
+
+            try:
+                new.toast.show_msg("Reloaded")
+                new.statusBar().showMessage("Reloaded", 2500)
+                new.log("UI reloaded (in-process)")
+            except Exception:
+                pass
+
+            # Tear down old window without process exit / lock cleanup
+            try:
+                self.hide()
+            except Exception:
+                pass
+            self.deleteLater()
+            return
+        except Exception as e:
+            self._reloading = False
+            self._closing_for_reload = False
+            try:
+                if app is not None:
+                    app.installEventFilter(self)
+            except Exception:
+                pass
+            try:
+                self.log(f"In-process reload failed: {e}")
+                self.toast.show_msg("Reload failed")
+                self.statusBar().showMessage(f"Reload failed: {e}", 5000)
+            except Exception:
+                pass
+            # Last resort: full process restart
+            try:
+                env = os.environ.copy()
+                env["SDR_FORCE_START"] = "1"
+                subprocess.Popen(
+                    [sys.executable, script, *list(sys.argv[1:])],
+                    cwd=str(Path(script).parent),
+                    env=env,
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+                try:
+                    LOCK.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                os._exit(0)
+            except Exception:
+                pass
 
     def _clean_stations(self, data):
         out = {}
@@ -414,11 +632,21 @@ class App(QMainWindow):
                 if not isinstance(s, dict):
                     continue
                 name = str(s.get("name", "")).strip()
+                if not name:
+                    continue
+                # Internet / stream stations
+                if s.get("url"):
+                    clean.append({
+                        "name": name,
+                        "url": str(s.get("url")).strip(),
+                        "mode": s.get("mode") or "net",
+                    })
+                    continue
                 try:
                     freq = float(s.get("freq", 0))
                 except Exception:
                     continue
-                if not name or freq <= 0 or name.replace(".", "").isdigit():
+                if freq <= 0 or name.replace(".", "").isdigit():
                     continue
                 clean.append({"name": name, "freq": freq, "mode": s.get("mode") or mode_for_freq(freq)})
             if clean:
@@ -450,19 +678,22 @@ class App(QMainWindow):
         hdr = QHBoxLayout()
         hdr.setContentsMargins(0, 0, 0, 0)
         hdr.setSpacing(4)
-        hl = QLabel("Stations")
-        hl.setObjectName("h")
-        hdr.addWidget(hl)
+        self.left_mode = QTabWidget()
+        self.left_mode.setDocumentMode(True)
+        self.left_mode.setFixedHeight(32)
+        self.left_mode.addTab(QWidget(), "SDR")
+        self.left_mode.addTab(QWidget(), "Internet")
+        self.left_mode.currentChanged.connect(self._on_left_mode)
+        hdr.addWidget(self.left_mode, 1)
         self.btn_scan = QPushButton()
         self.btn_scan.setObjectName("icon")
         self.btn_scan.setFixedSize(28, 28)
         self.btn_scan.setIcon(load_icon("radio"))
         self.btn_scan.setIconSize(QSize(15, 15))
-        self.btn_scan.setToolTip("Auto-scan all bands")
+        self.btn_scan.setToolTip("Auto-scan all bands (SDR)")
         self.btn_scan.setCursor(Qt.PointingHandCursor)
         self.btn_scan.clicked.connect(self.start_auto_scan)
         hdr.addWidget(self.btn_scan)
-        hdr.addStretch()
         self.btn_hide_left = QPushButton()
         self.btn_hide_left.setObjectName("icon")
         self.btn_hide_left.setFixedSize(28, 28)
@@ -474,6 +705,7 @@ class App(QMainWindow):
         hdr.addWidget(self.btn_hide_left)
         left.installEventFilter(self)
         ll.addLayout(hdr)
+
         row = QHBoxLayout()
         self.cats = QListWidget()
         self.cats.setObjectName("cats")
@@ -503,7 +735,9 @@ class App(QMainWindow):
 
         # Center
         mid = QWidget()
+        self.mid_panel = mid
         ml = QVBoxLayout(mid)
+        self._mid_layout = ml
         ml.setContentsMargins(6, 0, 6, 0)
         ml.setSpacing(8)
         edge = QHBoxLayout()
@@ -520,56 +754,105 @@ class App(QMainWindow):
         self.btn_show_right = QPushButton()
         self.btn_show_right.setObjectName("icon")
         self.btn_show_right.setFixedSize(32, 32)
-        self.btn_show_right.setIcon(load_icon("menu"))
-        self.btn_show_right.setIconSize(QSize(18, 18))
+        self.btn_show_right.setIcon(load_icon("panel-right"))
+        self.btn_show_right.setIconSize(QSize(16, 16))
         self.btn_show_right.setToolTip("Show side panel")
         self.btn_show_right.setVisible(False)
+        self.btn_show_right.setCursor(Qt.PointingHandCursor)
         self.btn_show_right.clicked.connect(self._toggle_right_sidebar)
         edge.addWidget(self.btn_show_right)
         ml.addLayout(edge)
 
-        hero = QFrame()
-        hero.setObjectName("card")
-        hero.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        hero.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        hl = QHBoxLayout(hero)
-        hl.setContentsMargins(16, 16, 16, 16)
-        hl.setSpacing(16)
-        hl.setAlignment(Qt.AlignTop)
+        # Shared player (same layout for SDR + Internet)
+        # Internet layout is the reference: centered art, title, sub, song, lyrics·play·like
+        self.spotify_panel = QFrame()
+        self.spotify_panel.setObjectName("card")
+        self.spotify_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        sp = QVBoxLayout(self.spotify_panel)
+        self._spotify_layout = sp
+        sp.setContentsMargins(32, 28, 32, 20)
+        sp.setSpacing(8)
+        sp.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        sp.addStretch(1)
 
-        self.art = QLabel("♪")
-        self.art.setFixedSize(132, 132)
-        self.art.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.art.setAlignment(Qt.AlignCenter)
-        self.art.setObjectName("art")
-        hl.addWidget(self.art)
+        self.sp_art = QLabel("♪")
+        self.sp_art.setFixedSize(280, 280)
+        self.sp_art.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.sp_art.setAlignment(Qt.AlignCenter)
+        self.sp_art.setObjectName("art")
+        self.sp_art.setScaledContents(False)
+        sp.addWidget(self.sp_art, 0, Qt.AlignHCenter)
+        sp.addSpacing(12)
 
-        info = QVBoxLayout()
-        info.setSpacing(4)
-        self.title = QLabel("Not playing")
-        self.title.setObjectName("title")
-        self.sub = QLabel("Pick a station")
-        self.sub.setObjectName("sub")
-        self.song_l = QLabel("")
-        self.song_l.setObjectName("song")
-        self.song_l.setWordWrap(True)
-        info.addWidget(self.title)
-        info.addWidget(self.sub)
-        info.addWidget(self.song_l)
-        info.addStretch()
+        self.sp_title = QLabel("Not playing")
+        self.sp_title.setObjectName("title")
+        self.sp_title.setAlignment(Qt.AlignHCenter)
+        self.sp_title.setWordWrap(True)
+        sp.addWidget(self.sp_title)
+        self.sp_sub = QLabel("Pick a station")
+        self.sp_sub.setObjectName("sub")
+        self.sp_sub.setAlignment(Qt.AlignHCenter)
+        self.sp_sub.setWordWrap(True)
+        sp.addWidget(self.sp_sub)
+        self.sp_song = QLabel("")
+        self.sp_song.setObjectName("song")
+        self.sp_song.setAlignment(Qt.AlignHCenter)
+        self.sp_song.setWordWrap(True)
+        sp.addWidget(self.sp_song)
+        sp.addSpacing(16)
 
-        ctr = QHBoxLayout()
-        ctr.setSpacing(10)
+        rowsp = QHBoxLayout()
+        rowsp.setSpacing(14)
+        rowsp.addStretch()
+        self.sp_lrc = QPushButton()
+        self.sp_lrc.setObjectName("icon")
+        self.sp_lrc.setFixedSize(42, 42)
+        self.sp_lrc.setIcon(load_icon("lyrics"))
+        self.sp_lrc.setIconSize(QSize(18, 18))
+        self.sp_lrc.setCheckable(True)
+        self.sp_lrc.setToolTip("Show / hide lyrics (right pane)")
+        self.sp_lrc.clicked.connect(self._toggle_lyrics_from_icon)
+        self.sp_play = QPushButton()
+        self.sp_play.setObjectName("play")
+        self.sp_play.setFixedSize(56, 56)
+        self.sp_play.setIcon(load_icon("play"))
+        self.sp_play.setIconSize(QSize(26, 26))
+        self.sp_play.setToolTip("Play / Stop")
+        self.sp_play.clicked.connect(self.toggle)
+        self.sp_fav = QPushButton()
+        self.sp_fav.setObjectName("icon")
+        self.sp_fav.setFixedSize(42, 42)
+        self.sp_fav.setIcon(load_icon("heart"))
+        self.sp_fav.setIconSize(QSize(18, 18))
+        self.sp_fav.setCheckable(True)
+        self.sp_fav.setEnabled(False)
+        self.sp_fav.setToolTip("Like / unlike")
+        self.sp_fav.clicked.connect(self.toggle_fav)
+        self.sp_id = QPushButton()
+        self.sp_id.setVisible(False)
+        self.sp_yt = QPushButton()
+        self.sp_yt.setVisible(False)
+        rowsp.addWidget(self.sp_lrc)
+        rowsp.addWidget(self.sp_play)
+        rowsp.addWidget(self.sp_fav)
+        rowsp.addStretch()
+        sp.addLayout(rowsp)
+        sp.addStretch(1)
+        self.spotify_panel.setVisible(True)
+        ml.addWidget(self.spotify_panel, 1)
 
-        self.btn_play = QPushButton()
-        self.btn_play.setObjectName("play")
-        self.btn_play.setFixedSize(48, 48)
-        self.btn_play.setIcon(load_icon("play"))
-        self.btn_play.setIconSize(QSize(22, 22))
-        self.btn_play.setToolTip("Play / Stop")
-        self.btn_play.clicked.connect(self.toggle)
-        ctr.addWidget(self.btn_play)
+        # Aliases so existing SDR code (title/art/btn_*) drives the same widgets
+        self.hero_frame = self.spotify_panel
+        self._hero_layout = sp
+        self.art = self.sp_art
+        self.title = self.sp_title
+        self.sub = self.sp_sub
+        self.song_l = self.sp_song
+        self.btn_lrc = self.sp_lrc
+        self.btn_play = self.sp_play
+        self.btn_fav = self.sp_fav
 
+        # Identify / YouTube live on the right sidebar (logic hooks)
         self.btn_id = QPushButton()
         self.btn_id.setObjectName("icon")
         self.btn_id.setFixedSize(36, 36)
@@ -577,27 +860,7 @@ class App(QMainWindow):
         self.btn_id.setIconSize(QSize(16, 16))
         self.btn_id.setToolTip("Identify song now")
         self.btn_id.clicked.connect(self.id_now)
-        ctr.addWidget(self.btn_id)
-
-        self.btn_lrc = QPushButton()
-        self.btn_lrc.setObjectName("icon")
-        self.btn_lrc.setFixedSize(36, 36)
-        self.btn_lrc.setIcon(load_icon("lyrics"))
-        self.btn_lrc.setIconSize(QSize(16, 16))
-        self.btn_lrc.setToolTip("Fetch lyrics now")
-        self.btn_lrc.clicked.connect(self.lyrics_now)
-        ctr.addWidget(self.btn_lrc)
-
-        self.btn_fav = QPushButton()
-        self.btn_fav.setObjectName("icon")
-        self.btn_fav.setFixedSize(36, 36)
-        self.btn_fav.setIcon(load_icon("heart"))
-        self.btn_fav.setIconSize(QSize(16, 16))
-        self.btn_fav.setCheckable(True)
-        self.btn_fav.setEnabled(False)
-        self.btn_fav.setToolTip("Bookmark / remove bookmark")
-        self.btn_fav.clicked.connect(self.toggle_fav)
-        ctr.addWidget(self.btn_fav)
+        self.btn_id.setVisible(False)
 
         self.btn_yt = QPushButton()
         self.btn_yt.setObjectName("icon")
@@ -607,18 +870,13 @@ class App(QMainWindow):
         self.btn_yt.setEnabled(False)
         self.btn_yt.setToolTip("YouTube")
         self.btn_yt.clicked.connect(self.open_yt)
-        ctr.addWidget(self.btn_yt)
+        self.btn_yt.setVisible(False)
 
-        ctr.addStretch()
-        info.addLayout(ctr)
-        hl.addLayout(info, 1)
-        ml.addWidget(hero)
-
-        # Tuner
-        tun = QFrame()
-        tun.setObjectName("card")
-        tun.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        tl = QVBoxLayout(tun)
+        # Tuner (SDR only)
+        self.tuner_frame = QFrame()
+        self.tuner_frame.setObjectName("card")
+        self.tuner_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        tl = QVBoxLayout(self.tuner_frame)
         tl.setContentsMargins(14, 12, 14, 12)
         tl.setSpacing(8)
         tr = QHBoxLayout()
@@ -655,34 +913,20 @@ class App(QMainWindow):
         self.freq.valueChanged.connect(self.on_freq)
         self.freq.editingFinished.connect(self.commit_tune)
         tl.addWidget(self.freq)
-        ml.addWidget(tun)
+        ml.addWidget(self.tuner_frame)
+        self._tuner_open = True  # user preference; stream mode can force-hide
 
-        # Lyrics
-        lyr_row = QHBoxLayout()
-        self.lyrics_toggle = QPushButton("▾  Lyrics")
-        self.lyrics_toggle.setObjectName("collapseBtn")
+        # Hidden lyrics toggle (state only; UI lives in right pane)
+        self.lyrics_toggle = QPushButton("Lyrics")
+        self.lyrics_toggle.setVisible(False)
         self.lyrics_toggle.setCheckable(True)
         self.lyrics_toggle.setChecked(False)
-        self.lyrics_toggle.setToolTip("Show / hide lyrics")
-        self.lyrics_toggle.clicked.connect(self._toggle_lyrics_panel)
-        lyr_row.addWidget(self.lyrics_toggle)
-        lyr_row.addStretch()
-        ml.addLayout(lyr_row)
-        self.lyrics_panel = QFrame()
-        self.lyrics_panel.setObjectName("card")
-        self.lyrics_panel.setVisible(False)
-        self.lyrics_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        lp = QVBoxLayout(self.lyrics_panel)
-        lp.setContentsMargins(12, 10, 12, 10)
-        self.lyrics = QTextEdit()
-        self.lyrics.setReadOnly(True)
-        self.lyrics.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.lyrics.setPlaceholderText("Lyrics appear here after ID or Lyrics Now")
-        lp.addWidget(self.lyrics)
-        ml.addWidget(self.lyrics_panel, 1)
-        ml.addStretch(0)                    # keeps player at top when lyrics closed
 
         self.split.addWidget(mid)
+        self._art_path = None
+        self._lyrics_open = False
+        self._right_tab_before_lyrics = 0
+        QTimer.singleShot(0, lambda: self._layout_player_for_lyrics(False))
 
         
         
@@ -696,7 +940,7 @@ class App(QMainWindow):
         rl.setContentsMargins(8, 10, 8, 10)
         rl.setSpacing(2)
 
-        # Top row: Collapse + Auto ID
+        # Top row: Collapse + Auto ID + Theme
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
@@ -706,20 +950,11 @@ class App(QMainWindow):
         self.btn_collapse_right.setIcon(load_icon("panel-right"))
         self.btn_collapse_right.setIconSize(QSize(16, 16))
         self.btn_collapse_right.setToolTip("Collapse sidebar")
+        self.btn_collapse_right.setCursor(Qt.PointingHandCursor)
         self.btn_collapse_right.clicked.connect(self._toggle_right_sidebar)
         top.addWidget(self.btn_collapse_right)
 
         top.addStretch()
-
-        self.btn_auto_side = QPushButton()
-        self.btn_auto_side.setObjectName("icon")
-        self.btn_auto_side.setFixedSize(34, 34)
-        self.btn_auto_side.setIcon(load_icon("music"))
-        self.btn_auto_side.setIconSize(QSize(16, 16))
-        self.btn_auto_side.setCheckable(True)
-        self.btn_auto_side.setToolTip("Auto Song ID")
-        self.btn_auto_side.clicked.connect(self._toggle_auto_side)
-        top.addWidget(self.btn_auto_side)
 
         self.btn_theme_side = QPushButton()
         self.btn_theme_side.setObjectName("icon")
@@ -727,17 +962,20 @@ class App(QMainWindow):
         self.btn_theme_side.setIcon(load_icon("moon"))
         self.btn_theme_side.setIconSize(QSize(16, 16))
         self.btn_theme_side.setToolTip("Light / Dark")
+        self.btn_theme_side.setCursor(Qt.PointingHandCursor)
         self.btn_theme_side.clicked.connect(self.toggle_theme)
         top.addWidget(self.btn_theme_side)
         rl.addLayout(top)
         rl.addSpacing(8)
 
-        # Navigation list (Library / Tools / Log / Theme)
+        # Navigation list (Library / Lyrics / Tools / Log)
         self.nav_btns = []
+        self._nav_labels = ["  Library", "  Lyrics", "  Tools", "  Log"]
         nav_items = [
             ("Library", "bookmark", 0),
-            ("Tools",   "settings", 1),
-            ("Log",     "history",  2),
+            ("Lyrics",  "lyrics",   1),
+            ("Tools",   "settings", 2),
+            ("Log",     "history",  3),
         ]
         for label, icon_name, idx in nav_items:
             btn = QPushButton(f"  {label}")
@@ -774,11 +1012,29 @@ class App(QMainWindow):
         self.fav_list.itemDoubleClicked.connect(self.open_fav)
         self.fav_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.fav_list.customContextMenuRequested.connect(self.fav_menu)
-        lib_tabs.addTab(self.fav_list, "Bookmarks")
+        lib_tabs.addTab(self.fav_list, "Likes")
         lib_l.addWidget(lib_tabs)
         self.right_stack.addWidget(lib_w)
 
-        # 1 – Tools
+        # 1 – Lyrics (right pane — not below the player)
+        self.lyrics_panel = QFrame()
+        self.lyrics_panel.setObjectName("card")
+        self.lyrics_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        lp = QVBoxLayout(self.lyrics_panel)
+        lp.setContentsMargins(8, 6, 8, 6)
+        lp.setSpacing(6)
+        lyr_hdr = QLabel("Lyrics")
+        lyr_hdr.setObjectName("h")
+        lyr_hdr.setStyleSheet("font-weight:600; font-size:13px;")
+        lp.addWidget(lyr_hdr)
+        self.lyrics = QTextEdit()
+        self.lyrics.setReadOnly(True)
+        self.lyrics.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.lyrics.setPlaceholderText("")
+        lp.addWidget(self.lyrics, 1)
+        self.right_stack.addWidget(self.lyrics_panel)
+
+        # 2 – Tools
         tools_w = QWidget()
         tools_l = QVBoxLayout(tools_w)
         tools_l.setContentsMargins(4, 8, 4, 4)
@@ -801,7 +1057,7 @@ class App(QMainWindow):
         tools_l.addStretch(1)
         self.right_stack.addWidget(tools_w)
 
-        # 2 – Log
+        # 3 – Log
         log_w = QWidget()
         log_l = QVBoxLayout(log_w)
         log_l.setContentsMargins(0, 4, 0, 0)
@@ -811,8 +1067,74 @@ class App(QMainWindow):
         self.right_stack.addWidget(log_w)
 
         rl.addWidget(self.right_stack, 1)
+
+        # Bottom-right actions: Tuner · Identify · Fetch lyrics · YouTube · Auto Song ID
+        rl.addSpacing(6)
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 4, 0, 0)
+        bottom.setSpacing(8)
+        bottom.addStretch(1)
+
+        # Show / hide SDR tuner (band, mode, gain, frequency scale)
+        self.btn_toggle_tuner = QPushButton()
+        self.btn_toggle_tuner.setObjectName("icon")
+        self.btn_toggle_tuner.setFixedSize(38, 38)
+        self.btn_toggle_tuner.setIcon(load_icon("radio"))
+        self.btn_toggle_tuner.setIconSize(QSize(18, 18))
+        self.btn_toggle_tuner.setCheckable(True)
+        self.btn_toggle_tuner.setChecked(True)
+        self.btn_toggle_tuner.setToolTip("Show / hide tuner (band · mode · gain · frequency)")
+        self.btn_toggle_tuner.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_tuner.setVisible(True)
+        self.btn_toggle_tuner.clicked.connect(self._on_toggle_tuner)
+        bottom.addWidget(self.btn_toggle_tuner)
+
+        self.btn_id_side = QPushButton()
+        self.btn_id_side.setObjectName("icon")
+        self.btn_id_side.setFixedSize(38, 38)
+        self.btn_id_side.setIcon(load_icon("search"))
+        self.btn_id_side.setIconSize(QSize(18, 18))
+        self.btn_id_side.setToolTip("Identify song now")
+        self.btn_id_side.setCursor(Qt.PointingHandCursor)
+        self.btn_id_side.clicked.connect(self.id_now)
+        bottom.addWidget(self.btn_id_side)
+
+        self.btn_lrc_side = QPushButton()
+        self.btn_lrc_side.setObjectName("icon")
+        self.btn_lrc_side.setFixedSize(38, 38)
+        self.btn_lrc_side.setIcon(load_icon("lyrics"))
+        self.btn_lrc_side.setIconSize(QSize(18, 18))
+        self.btn_lrc_side.setToolTip("Fetch lyrics now")
+        self.btn_lrc_side.setCursor(Qt.PointingHandCursor)
+        self.btn_lrc_side.clicked.connect(self.lyrics_now)
+        bottom.addWidget(self.btn_lrc_side)
+
+        self.btn_yt_side = QPushButton()
+        self.btn_yt_side.setObjectName("icon")
+        self.btn_yt_side.setFixedSize(38, 38)
+        self.btn_yt_side.setIcon(load_icon("youtube"))
+        self.btn_yt_side.setIconSize(QSize(18, 18))
+        self.btn_yt_side.setToolTip("YouTube")
+        self.btn_yt_side.setCursor(Qt.PointingHandCursor)
+        self.btn_yt_side.clicked.connect(self.open_yt)
+        bottom.addWidget(self.btn_yt_side)
+
+        # Auto Song ID — no checked highlight; status via hover tooltip only
+        self.btn_auto_side = QPushButton()
+        self.btn_auto_side.setObjectName("icon")
+        self.btn_auto_side.setFixedSize(38, 38)
+        self.btn_auto_side.setIcon(load_icon("music"))
+        self.btn_auto_side.setIconSize(QSize(18, 18))
+        self.btn_auto_side.setCheckable(False)  # no green highlight
+        self.btn_auto_side.setCursor(Qt.PointingHandCursor)
+        self.btn_auto_side.clicked.connect(self._toggle_auto_side)
+        bottom.addWidget(self.btn_auto_side)
+        self._sync_auto_id_tooltip()
+
+        rl.addLayout(bottom)
+
         self._right_expanded = True
-        # Start collapsed
+        # Start collapsed — reopen control is center-edge btn_show_right
         self.right_panel.setMinimumWidth(52)
         self.right_panel.setMaximumWidth(56)
         for b in self.nav_btns:
@@ -1128,6 +1450,12 @@ class App(QMainWindow):
         self._highlight_station_for_freq(v)
 
     def load_cat(self, cat):
+        # Top-level Internet mode tab → radio-browser categories
+        if getattr(self, "left_mode", None) is not None and self.left_mode.currentIndex() == 1:
+            if cat:
+                self._load_internet_cat(cat)
+            self._apply_stream_mode(True)
+            return
         self.stations_list.blockSignals(True)
         self.stations_list.clear()
         if not cat or cat not in self.stations:
@@ -1136,14 +1464,100 @@ class App(QMainWindow):
         for s in self.stations[cat]:
             if not isinstance(s, dict):
                 continue
-            name, freq = str(s.get("name", "?")), s.get("freq", 0)
-            it = QListWidgetItem(f"{name}  ·  {freq}")
-            it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
+            name = str(s.get("name", "?"))
+            if s.get("url"):
+                it = QListWidgetItem(f"{name}  ·  net")
+                it.setToolTip(f"{name}\n{s.get('url')}")
+            else:
+                freq = s.get("freq", 0)
+                it = QListWidgetItem(f"{name}  ·  {freq}")
+                it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
             it.setData(Qt.UserRole, s)
             self.stations_list.addItem(it)
         self.stations_list.blockSignals(False)
+        # SDR-side "Internet" (or any stream) category → same UI as Internet radio
+        self._apply_stream_mode(self._cat_is_internet(cat))
         try:
-            self._highlight_station_for_freq(self.freq.value())
+            if not self._cat_is_internet(cat):
+                self._highlight_station_for_freq(self.freq.value())
+        except Exception:
+            pass
+
+    def _cat_is_internet(self, cat) -> bool:
+        """True if category is stream/internet radio (not SDR frequencies)."""
+        if not cat:
+            return False
+        name = str(cat).strip().lower()
+        if name in ("internet", "stream", "online", "web radio", "webradio"):
+            return True
+        items = (self.stations or {}).get(cat) or []
+        if not items:
+            return False
+        urls = 0
+        total = 0
+        for s in items:
+            if not isinstance(s, dict):
+                continue
+            total += 1
+            if s.get("url"):
+                urls += 1
+        if total == 0:
+            return False
+        # Majority (or all) stream URLs → treat as internet radio
+        return urls > 0 and urls * 2 >= total
+
+    def _apply_stream_mode(self, is_net: bool):
+        """Apply Internet-radio layout (spotify player, hide tuner) or SDR layout."""
+        is_net = bool(is_net)
+        self._stream_mode = is_net
+        try:
+            if hasattr(self, "btn_scan") and getattr(self, "left_mode", None) is not None:
+                # Scan only makes sense for real SDR categories
+                if self.left_mode.currentIndex() == 0:
+                    self.btn_scan.setVisible(not is_net)
+                else:
+                    self.btn_scan.setVisible(False)
+            self._set_player_layout(spotify=is_net)
+            # Tuner icon + body only for SDR RF stations (hidden on Internet radio)
+            want_tuner = (not is_net) and bool(getattr(self, "_tuner_open", True))
+            self._set_tuner_visible(want_tuner)
+            if hasattr(self, "btn_toggle_tuner"):
+                self.btn_toggle_tuner.setVisible(not is_net)
+                self.btn_toggle_tuner.setEnabled(not is_net)
+                self.btn_toggle_tuner.blockSignals(True)
+                self.btn_toggle_tuner.setChecked(bool(getattr(self, "_tuner_open", True)))
+                self.btn_toggle_tuner.blockSignals(False)
+                self.btn_toggle_tuner.setToolTip(
+                    "Show / hide tuner (band · mode · gain · frequency)"
+                )
+            self._layout_player_for_lyrics(getattr(self, "_lyrics_open", False))
+            if hasattr(self, "mid_panel"):
+                self.mid_panel.updateGeometry()
+            if hasattr(self, "_mid_layout"):
+                self._mid_layout.activate()
+        except Exception as e:
+            try:
+                self.log(f"stream mode: {e}")
+            except Exception:
+                pass
+
+    def _on_toggle_tuner(self):
+        """Small radio icon — show/hide band · mode · gain · frequency tuner."""
+        on = True
+        if hasattr(self, "btn_toggle_tuner"):
+            on = bool(self.btn_toggle_tuner.isChecked())
+        self._tuner_open = on
+        # Never show tuner while in internet/stream layout
+        if getattr(self, "_stream_mode", False):
+            self._set_tuner_visible(False)
+        else:
+            self._set_tuner_visible(on)
+            try:
+                self._layout_player_for_lyrics(getattr(self, "_lyrics_open", False))
+            except Exception:
+                pass
+        try:
+            self._save_prefs()
         except Exception:
             pass
 
@@ -1155,6 +1569,7 @@ class App(QMainWindow):
         cat = cat_item.text()
         menu = QMenu(self)
         act_add = menu.addAction("Add station…")
+        act_add_net = menu.addAction("Add internet station…")
         act_ren = menu.addAction("Rename…")
         act_del = menu.addAction("Remove")
         menu.addSeparator()
@@ -1168,6 +1583,20 @@ class App(QMainWindow):
             a.setEnabled(item is not None)
         chosen = menu.exec_(self.stations_list.mapToGlobal(pos))
         if chosen is None:
+            return
+        if chosen == act_add_net:
+            name, ok = QInputDialog.getText(self, "Internet station", "Name:")
+            if not ok or not name.strip():
+                return
+            url, ok = QInputDialog.getText(self, "Stream URL", "URL (http/https):")
+            if not ok or not url.strip():
+                return
+            self.stations.setdefault(cat, []).append({
+                "name": name.strip(), "url": url.strip(), "mode": "net"
+            })
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
+            self.toast.show_msg("Added stream " + name.strip())
             return
         if chosen == act_add:
             name, ok = QInputDialog.getText(self, "Add station", "Name:")
@@ -1262,11 +1691,22 @@ class App(QMainWindow):
         s = item.data(Qt.UserRole)
         if not s:
             return
-        self.freq.setValue(s["freq"])
-        self.scale.setValue(s["freq"])
-        self.mode.setCurrentText(s["mode"])
-        self._sync_band(s["freq"])
-        self.play(s["freq"], s["mode"], s["name"])
+        # Internet stream
+        if s.get("url"):
+            self._apply_stream_mode(True)
+            self.play_stream(s.get("url"), s.get("name", "Stream"))
+            return
+        # RF station — restore SDR player/tuner if we were in stream UI
+        if getattr(self, "left_mode", None) is not None and self.left_mode.currentIndex() == 0:
+            self._apply_stream_mode(False)
+        freq = float(s.get("freq", 0) or 0)
+        if freq <= 0:
+            return
+        self.freq.setValue(freq)
+        self.scale.setValue(freq)
+        self.mode.setCurrentText(s.get("mode") or mode_for_freq(freq))
+        self._sync_band(freq)
+        self.play(freq, s.get("mode") or mode_for_freq(freq), s.get("name", ""))
 
 
     def _station_art_path(self, name):
@@ -1303,6 +1743,16 @@ class App(QMainWindow):
         self.btn_yt.setEnabled(False)
         self.art.setPixmap(QPixmap())
         self.art.setText("♪")
+        if hasattr(self, "sp_art"):
+            self.sp_art.setPixmap(QPixmap())
+            self.sp_art.setText("♪")
+        if hasattr(self, "sp_song"):
+            self.sp_song.setText("")
+        if hasattr(self, "sp_fav"):
+            self.sp_fav.setEnabled(False)
+            self.sp_fav.setChecked(False)
+            self.sp_fav.setIcon(load_icon("heart"))
+        self._art_path = None
         self.lyrics.setPlainText("")
         self.lrc = []
         self.lrc_timer.stop()
@@ -1311,12 +1761,27 @@ class App(QMainWindow):
         self.playing = on
         if on:
             self.btn_play.setIcon(load_icon("stop"))
+            if hasattr(self, "btn_id"):
+                self.btn_id.setVisible(False)
+            if hasattr(self, "btn_yt"):
+                self.btn_yt.setVisible(False)
+            if hasattr(self, "sp_play"):
+                self.sp_play.setIcon(load_icon("stop"))
             self.title.setText(name or "Playing")
             self.sub.setText(detail)
+            if hasattr(self, "sp_title"):
+                self.sp_title.setText(name or "Playing")
+                self.sp_sub.setText(detail)
         else:
             self.btn_play.setIcon(load_icon("play"))
+            if hasattr(self, "sp_play"):
+                self.sp_play.setIcon(load_icon("play"))
             self.title.setText("Not playing")
             self.sub.setText("Pick a station")
+            if hasattr(self, "sp_title"):
+                self.sp_title.setText("Not playing")
+                self.sp_sub.setText("Pick a station")
+                self.sp_song.setText("")
             self.clear_song()
 
     def stop(self):
@@ -1337,7 +1802,7 @@ class App(QMainWindow):
         except Exception:
             pass
         self.rtl = None
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             self.set_playing(False)
@@ -1355,7 +1820,7 @@ class App(QMainWindow):
     def _soft_reset_dongle(self):
         """Release a stuck RTL-SDR. Tries helper script first, then sysfs."""
         self.log("Soft-resetting dongle…")
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.2)
 
@@ -1423,6 +1888,61 @@ class App(QMainWindow):
             return False
 
 
+
+    def play_stream(self, url, name="Internet Radio"):
+        """Play an internet radio URL via ffplay (fallback mpv)."""
+        try:
+            self.stop()
+        except Exception:
+            pass
+        self.stop_id()
+        self.clear_song()
+        detail = "Internet stream"
+        self.set_playing(True, name, detail)
+        self.log(f"▶ {name} · {url}")
+        self._current_station = name
+
+        cmd = None
+        # Prefer ffplay (ffmpeg), quiet, no window
+        try:
+            if subprocess.run(["which", "ffplay"], capture_output=True).returncode == 0:
+                cmd = [
+                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                    "-i", url,
+                ]
+        except Exception:
+            pass
+        if cmd is None:
+            try:
+                if subprocess.run(["which", "mpv"], capture_output=True).returncode == 0:
+                    cmd = ["mpv", "--no-video", "--really-quiet", url]
+            except Exception:
+                pass
+        if cmd is None:
+            self.log("No ffplay or mpv found – install ffmpeg or mpv")
+            self.toast.show_msg("Install ffmpeg (ffplay) for internet radio")
+            self.set_playing(False)
+            return
+
+        try:
+            self.rtl = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self.log(f"stream: {e}")
+            self.set_playing(False)
+            return
+
+        time.sleep(0.4)
+        if self.rtl.poll() is not None:
+            self.log("stream process exited – bad URL or network?")
+            self.set_playing(False)
+            self.rtl = None
+            return
+
+        self.log("stream: started OK")
+        if bool(self.cfg.get("song_id", True)):
+            self.start_id()
+
+
     def play(self, freq, mode, name="", quick=False):
         """Start or retune. Auto soft-resets the dongle if it is locked."""
         # Stop previous cleanly
@@ -1438,7 +1958,7 @@ class App(QMainWindow):
                 pass
             self.rtl = None
 
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.2 if quick else 0.3)
 
@@ -1488,7 +2008,7 @@ class App(QMainWindow):
                 return
 
             self.log(f"play: attempt {attempt+1} failed (device busy)")
-            subprocess.run(["killall", "-9", "rtl_fm", "play"],
+            subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if attempt == 0:
                 # After first failure, soft-reset the dongle
@@ -1501,12 +2021,20 @@ class App(QMainWindow):
         self.rtl = None
 
 
+    def _sync_auto_id_tooltip(self):
+        """Hover shows On/Off — no checked highlight on the icon."""
+        if not hasattr(self, "btn_auto_side"):
+            return
+        on = bool(self.cfg.get("song_id", True))
+        self.btn_auto_side.setToolTip(
+            "Auto Song ID: On" if on else "Auto Song ID: Off"
+        )
+
     def _toggle_auto_side(self):
         on = not bool(self.cfg.get("song_id", True))
         self.cfg["song_id"] = on
         save_json(CONFIG, self.cfg)
-        if hasattr(self, "btn_auto_side"):
-            self.btn_auto_side.setChecked(on)
+        self._sync_auto_id_tooltip()
         self.on_auto(on)
         self.toast.show_msg("Auto Song ID " + ("on" if on else "off"))
         self._save_prefs()
@@ -1514,6 +2042,7 @@ class App(QMainWindow):
     def on_auto(self, on):
         self.cfg["song_id"] = on
         save_json(CONFIG, self.cfg)
+        self._sync_auto_id_tooltip()
         if on and self.playing:
             self.start_id()
         else:
@@ -1697,10 +2226,19 @@ class App(QMainWindow):
         self.song = song
         text = f"{song.get('artist','')} — {song.get('title','')}"
         self.song_l.setText(text)
+        if hasattr(self, "song_l2"):
+            self.song_l2.setText(text)
+        if hasattr(self, "sp_song"):
+            self.sp_song.setText(text)
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
-        self.btn_fav.setChecked(self._is_fav(song))
+        liked = self._is_fav(song)
+        self.btn_fav.setChecked(liked)
         self.btn_fav.setIcon(load_icon("heart"))
+        if hasattr(self, "sp_fav"):
+            self.sp_fav.setEnabled(True)
+            self.sp_fav.setChecked(liked)
+            self.sp_fav.setIcon(load_icon("heart"))
         self.log(f"♪ {text}")
         self.toast.show_msg(f"♪  {text}")
         self.history.insert(0, song)
@@ -1801,16 +2339,23 @@ class App(QMainWindow):
 
     def show_art(self, path):
         try:
+            self._art_path = path
             pix = QPixmap(path)
-            if pix.isNull():
-                self.art.setText("♪")
+            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+            if art is None:
                 return
-            pix = pix.scaled(132, 132, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            if pix.width() >= 132 and pix.height() >= 132:
-                pix = pix.copy((pix.width()-132)//2, (pix.height()-132)//2, 132, 132)
-            self.art.setPixmap(pix)
+            if pix.isNull():
+                art.setText("♪")
+                return
+            side = max(1, art.width() or 280)
+            scaled = pix.scaled(side, side, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            if scaled.width() >= side and scaled.height() >= side:
+                scaled = scaled.copy((scaled.width()-side)//2, (scaled.height()-side)//2, side, side)
+            art.setPixmap(scaled)
         except Exception:
-            self.art.setText("♪")
+            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+            if art is not None:
+                art.setText("♪")
 
     def fetch_lrc(self, artist, title):
         headers = {"User-Agent": "SDR-Radio/1.0[](https://github.com/nagesh147/sdr-radio)"}
@@ -1877,12 +2422,16 @@ class App(QMainWindow):
         if self._is_fav(self.song):
             self.favs = [s for s in self.favs if (_norm(s.get("title")), _norm(s.get("artist"))) != k]
             self.btn_fav.setChecked(False)
-            self.toast.show_msg("Removed bookmark")
+            if hasattr(self, "sp_fav"):
+                self.sp_fav.setChecked(False)
+            self.toast.show_msg("Removed like")
         else:
             self.favs.insert(0, self.song)
             self.favs = self.favs[:50]
             self.btn_fav.setChecked(True)
-            self.toast.show_msg("Bookmarked")
+            if hasattr(self, "sp_fav"):
+                self.sp_fav.setChecked(True)
+            self.toast.show_msg("Liked")
         save_json(FAV_F, self.favs)
         self.refresh_favs()
 
@@ -1904,7 +2453,7 @@ class App(QMainWindow):
         self.refresh_favs()
         if self.song and song_match(self.song, s):
             self.btn_fav.setIcon(load_icon("heart"))
-        self.toast.show_msg("Removed bookmark")
+        self.toast.show_msg("Removed like")
 
     def refresh_hist(self):
         self.hist.clear()
@@ -1944,20 +2493,167 @@ class App(QMainWindow):
             self.btn_yt.setEnabled(True)
 
 
-    def _toggle_lyrics_panel(self):
-        show = self.lyrics_toggle.isChecked()
-        self.lyrics_toggle.setText(("▾  Lyrics" if show else "▸  Lyrics"))
-        self.lyrics_panel.setVisible(show)
+
+    def _toggle_lyrics_from_icon(self):
+        """Icon next to play: show/hide lyrics in the right pane; fetch if empty."""
+        show = not getattr(self, "_lyrics_open", False)
+        if hasattr(self, "lyrics_toggle"):
+            self.lyrics_toggle.setChecked(show)
+        self._toggle_lyrics_panel()
         if show:
-            self.lyrics_panel.setMinimumHeight(200)
-            self.lyrics_panel.setMaximumHeight(16777215)
-            self.lyrics.setMinimumHeight(180)
+            txt = (self.lyrics.toPlainText() or "").strip()
+            if self.song and (not txt or txt.startswith("No lyrics") or txt.startswith("Loading")):
+                if not txt.startswith("Loading"):
+                    self.lyrics_now()
+
+    def _toggle_lyrics_panel(self):
+        """Show/hide lyrics in the right sidebar (not under the player)."""
+        show = bool(self.lyrics_toggle.isChecked())
+        self._lyrics_open = show
+
+        # Sync checkable lyric icons
+        for bname in ("btn_lrc", "sp_lrc"):
+            b = getattr(self, bname, None)
+            if b is not None:
+                b.blockSignals(True)
+                b.setChecked(show)
+                b.blockSignals(False)
+
+        if show:
+            # Remember previous right tab (if not already on lyrics)
+            try:
+                cur = self.right_stack.currentIndex() if hasattr(self, "right_stack") else 0
+                if cur != 1:
+                    self._right_tab_before_lyrics = cur
+            except Exception:
+                self._right_tab_before_lyrics = 0
+            self._ensure_right_open_for_lyrics()
+            self._switch_right_tab(1)  # Lyrics page
         else:
-            self.lyrics_panel.setMinimumHeight(0)
-            self.lyrics_panel.setMaximumHeight(0)
-            self.lyrics.setMinimumHeight(0)
+            # Restore previous tab if still on lyrics
+            try:
+                if hasattr(self, "right_stack") and self.right_stack.currentIndex() == 1:
+                    prev = int(getattr(self, "_right_tab_before_lyrics", 0) or 0)
+                    if prev == 1:
+                        prev = 0
+                    self._switch_right_tab(prev)
+            except Exception:
+                pass
+
+        # Center player stays expanded (lyrics no longer steal vertical space)
+        self._layout_player_for_lyrics(show)
         try:
             self._save_prefs()
+        except Exception:
+            pass
+
+    def _ensure_right_open_for_lyrics(self):
+        """Expand the right sidebar so lyrics are readable."""
+        rp = getattr(self, "right_panel", None)
+        if rp is None:
+            return
+        try:
+            need_open = (
+                not rp.isVisible()
+                or rp.maximumWidth() == 0
+                or rp.maximumWidth() <= 60
+                or not getattr(self, "right_stack", None)
+                or not self.right_stack.isVisible()
+            )
+        except Exception:
+            need_open = True
+        if need_open:
+            rp.setVisible(True)
+            rp.setMinimumWidth(240)
+            rp.setMaximumWidth(360)
+            try:
+                self.split.widget(2).setVisible(True)
+            except Exception:
+                pass
+            self._right_expanded = True
+            labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
+            for b, lab in zip(getattr(self, "nav_btns", []), labels):
+                b.setText(lab)
+            if hasattr(self, "right_stack"):
+                self.right_stack.setVisible(True)
+            if hasattr(self, "split"):
+                total = max(900, self.split.width())
+                self.split.setSizes([int(total * 0.26), int(total * 0.48), int(total * 0.26)])
+        else:
+            # Already open — widen a bit for lyrics
+            try:
+                if rp.maximumWidth() < 300:
+                    rp.setMinimumWidth(240)
+                    rp.setMaximumWidth(360)
+            except Exception:
+                pass
+
+    def _layout_player_for_lyrics(self, lyrics_open: bool = False):
+        """Shared player sizing (identical for SDR + Internet)."""
+        self._lyrics_open = bool(lyrics_open)
+
+        try:
+            mid_h = max(300, self.mid_panel.height() if hasattr(self, "mid_panel") else 600)
+        except Exception:
+            mid_h = 600
+        tuner_h = 0
+        try:
+            if hasattr(self, "tuner_frame") and self.tuner_frame.isVisible():
+                tuner_h = max(120, self.tuner_frame.sizeHint().height())
+        except Exception:
+            tuner_h = 140
+        avail = max(200, mid_h - tuner_h - 40)
+
+        # One art size for both modes (Internet layout is the reference)
+        art_side = min(360, max(240, int(avail * 0.60)))
+        title_px, sub_px, song_px = 28, 13, 14
+        play_sz, icon_sz = 60, 44
+        play_icon, icon_icon = 28, 18
+        sp_margins = (32, 28, 32, 20)
+
+        song_color = "#30d158" if getattr(self, "dark", True) else "#248a3d"
+        sub_color = "#8e8e93" if getattr(self, "dark", True) else "#6e6e73"
+        art_bg = "#2c2c2e" if getattr(self, "dark", True) else "#f2f2f7"
+        art_fg = "#636366" if getattr(self, "dark", True) else "#aeaeb2"
+        art_radius = max(12, art_side // 12)
+        art_font = max(32, art_side // 4)
+
+        if hasattr(self, "spotify_panel"):
+            self.spotify_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.spotify_panel.setVisible(True)
+            if hasattr(self, "_spotify_layout"):
+                self._spotify_layout.setContentsMargins(*sp_margins)
+            self.sp_art.setFixedSize(art_side, art_side)
+            self.sp_art.setStyleSheet(
+                f"QLabel#art {{ background:{art_bg}; border-radius:{art_radius}px; "
+                f"color:{art_fg}; font-size:{art_font}px; }}"
+            )
+            self.sp_title.setStyleSheet(f"font-size:{title_px}px; font-weight:700;")
+            self.sp_sub.setStyleSheet(f"font-size:{sub_px}px; color:{sub_color};")
+            self.sp_song.setStyleSheet(f"font-size:{song_px}px; color:{song_color};")
+            self.sp_play.setFixedSize(play_sz, play_sz)
+            self.sp_play.setIconSize(QSize(play_icon, play_icon))
+            for b in (self.sp_lrc, self.sp_fav):
+                b.setFixedSize(icon_sz, icon_sz)
+                b.setIconSize(QSize(icon_icon, icon_icon))
+
+        ml = getattr(self, "_mid_layout", None)
+        if ml is not None:
+            try:
+                if hasattr(self, "spotify_panel"):
+                    ml.setStretch(ml.indexOf(self.spotify_panel), 1)
+            except Exception:
+                pass
+
+        path = getattr(self, "_art_path", None)
+        if path:
+            self.show_art(path)
+
+        try:
+            if hasattr(self, "mid_panel"):
+                self.mid_panel.updateGeometry()
+            if hasattr(self, "spotify_panel"):
+                self.spotify_panel.updateGeometry()
         except Exception:
             pass
 
@@ -1991,6 +2687,19 @@ class App(QMainWindow):
 
     def eventFilter(self, obj, ev):
         from PyQt5.QtCore import QEvent
+        # Global reload: accept ShortcutOverride so children don't eat Ctrl+R / F5
+        try:
+            et = ev.type()
+            if et in (QEvent.KeyPress, QEvent.ShortcutOverride):
+                if self._is_reload_key(ev):
+                    if et == QEvent.ShortcutOverride:
+                        ev.accept()
+                        return True
+                    # KeyPress → do the reload
+                    self.reload_app()
+                    return True
+        except Exception:
+            pass
         left = self.split.widget(0) if hasattr(self, "split") else None
         right = self.split.widget(2) if hasattr(self, "split") else None
         if left is not None and obj is left:
@@ -2266,6 +2975,250 @@ class App(QMainWindow):
 
         QTimer.singleShot(0, apply)
 
+
+
+    def _set_tuner_visible(self, on: bool):
+        """Show/hide SDR tuner (band, mode, gain, freq scale) as a whole card."""
+        on = bool(on)
+        if hasattr(self, "tuner_frame"):
+            self.tuner_frame.setVisible(on)
+            # Collapse height so center player can expand on Internet mode
+            if on:
+                self.tuner_frame.setMinimumHeight(0)
+                self.tuner_frame.setMaximumHeight(16777215)
+            else:
+                self.tuner_frame.setMinimumHeight(0)
+                self.tuner_frame.setMaximumHeight(0)
+        for wname in ("scale", "freq", "band", "mode", "gain"):
+            w = getattr(self, wname, None)
+            if w is not None:
+                w.setVisible(on)
+        # Anonymous Band / Mode / Gain labels live in the same card — hide with frame
+
+    def _set_player_layout(self, spotify=False):
+        """Player chrome is shared (Internet layout). Only tuner differs for SDR."""
+        try:
+            # Always use the same centered player for SDR + Internet
+            if hasattr(self, "spotify_panel"):
+                self.spotify_panel.setVisible(True)
+            if hasattr(self, "player_stack"):
+                self.player_stack.setVisible(False)
+            if hasattr(self, "_shared_controls"):
+                self._shared_controls.setVisible(False)
+            # Tuner icon + body: SDR only
+            if hasattr(self, "btn_toggle_tuner"):
+                self.btn_toggle_tuner.setVisible(not spotify)
+                self.btn_toggle_tuner.setEnabled(not spotify)
+            want = (not spotify) and bool(getattr(self, "_tuner_open", True))
+            self._set_tuner_visible(want)
+        except Exception as e:
+            try:
+                self.log(f"layout: {e}")
+            except Exception:
+                pass
+
+
+    def _on_left_mode(self, idx):
+        is_net = idx == 1
+        if is_net:
+            self._show_internet_ui(True)
+            self._apply_stream_mode(True)
+        else:
+            self._show_internet_ui(False)
+            # After restoring SDR cats, load_cat applies stream mode if cat is Internet
+            cat = None
+            try:
+                it = self.cats.currentItem()
+                cat = it.text() if it else None
+            except Exception:
+                cat = None
+            self._apply_stream_mode(self._cat_is_internet(cat) if cat else False)
+
+    def _show_internet_ui(self, on):
+        """Switch left lists between local SDR stations and internet radio."""
+        if on:
+            # Load internet categories once
+            if not getattr(self, "_net_ready", False):
+                self._init_internet_categories()
+                self._net_ready = True
+            # Populate cats with net categories
+            self.cats.blockSignals(True)
+            self.cats.clear()
+            for c in getattr(self, "_net_categories", []):
+                self.cats.addItem(c)
+            self.cats.blockSignals(False)
+            if self.cats.count():
+                self.cats.setCurrentRow(0)
+                self._load_internet_cat(self.cats.currentItem().text())
+        else:
+            # Restore SDR categories
+            self.cats.blockSignals(True)
+            self.cats.clear()
+            for k in self.stations:
+                self.cats.addItem(k)
+            self.cats.blockSignals(False)
+            if self.cats.count():
+                self.cats.setCurrentRow(0)
+                self.load_cat(self.cats.currentItem().text())
+
+    def _init_internet_categories(self):
+        """Popular genres + India focus – stations loaded on demand from radio-browser."""
+        self._net_categories = [
+            "Top voted",
+            "India",
+            "Bollywood",
+            "Tamil",
+            "Telugu",
+            "Hindi",
+            "News",
+            "Talk",
+            "Pop",
+            "Rock",
+            "Jazz",
+            "Classical",
+            "Electronic",
+            "Dance",
+            "Hip-Hop",
+            "Country",
+            "Reggae",
+            "Metal",
+            "Blues",
+            "Folk",
+            "Ambient",
+            "Lounge",
+            "Sports",
+            "Christian",
+            "World",
+            "UK",
+            "USA",
+            "Germany",
+            "France",
+            "Search…",
+        ]
+        self._net_cache = {}
+
+
+
+    def _on_net_list(self, stations, label):
+        self.stations_list.clear()
+        if not stations:
+            self.stations_list.addItem(label or "No stations")
+            self.statusBar().showMessage(label or "No stations")
+            return
+        for s in stations:
+            if not isinstance(s, dict):
+                continue
+            name = (s.get("name") or "Station").strip()
+            url = (s.get("url_resolved") or s.get("url") or "").strip()
+            if not url:
+                continue
+            country = s.get("countrycode") or s.get("country") or ""
+            text = f"{name}  ·  {country}" if country else name
+            it = QListWidgetItem(text)
+            it.setToolTip(f"{name}\n{url}")
+            it.setData(Qt.UserRole, {"name": name, "url": url, "mode": "net"})
+            self.stations_list.addItem(it)
+        self.statusBar().showMessage(f"Internet: {self.stations_list.count()} – {label}")
+
+    def _load_internet_cat(self, cat):
+        self.stations_list.clear()
+        self.stations_list.addItem("Loading…")
+        self.statusBar().showMessage(f"Loading {cat}…")
+
+        def work():
+            try:
+                if cat in getattr(self, "_net_cache", {}):
+                    self.sig.net_list.emit(self._net_cache[cat], cat)
+                    return
+                if cat == "Search…":
+                    self.sig.net_list.emit([], "Search…")
+                    return
+                if cat == "Top voted":
+                    stations = self._radio_browser_get("/json/stations/topvote/80")
+                elif cat in ("India", "UK", "USA", "Germany", "France"):
+                    cmap = {
+                        "India": "India",
+                        "UK": "The United Kingdom Of Great Britain And Northern Ireland",
+                        "USA": "The United States Of America",
+                        "Germany": "Germany",
+                        "France": "France",
+                    }
+                    q = urllib.parse.quote(cmap.get(cat, cat))
+                    stations = self._radio_browser_get(
+                        f"/json/stations/search?country={q}&limit=80&hidebroken=true&order=votes"
+                    )
+                else:
+                    q = urllib.parse.quote(cat.lower())
+                    stations = self._radio_browser_get(
+                        f"/json/stations/search?tag={q}&limit=80&hidebroken=true&order=votes"
+                    )
+                if not isinstance(stations, list):
+                    stations = []
+                self._net_cache[cat] = stations
+                self.sig.log.emit(f"Internet {cat}: {len(stations)} stations")
+                self.sig.net_list.emit(stations, cat)
+            except Exception as e:
+                self.sig.log.emit(f"Internet error: {e}")
+                self.sig.net_list.emit([], f"Error: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+        # Handle Search… on main thread after empty emit
+        if cat == "Search…":
+            def do_search():
+                text, ok = QInputDialog.getText(self, "Search radio", "Name / keyword:")
+                if ok and text.strip():
+                    self._search_internet(text.strip())
+            QTimer.singleShot(100, do_search)
+
+    def _search_internet(self, query):
+        self.stations_list.clear()
+        self.stations_list.addItem("Searching…")
+        self.statusBar().showMessage(f"Searching “{query}”…")
+
+        def work():
+            try:
+                q = urllib.parse.quote(query)
+                stations = self._radio_browser_get(
+                    f"/json/stations/search?name={q}&limit=80&hidebroken=true"
+                )
+                if not isinstance(stations, list):
+                    stations = []
+                self.sig.log.emit(f"Search {query}: {len(stations)}")
+                self.sig.net_list.emit(stations, f"Search: {query}")
+            except Exception as e:
+                self.sig.log.emit(f"Search error: {e}")
+                self.sig.net_list.emit([], f"Error: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _radio_browser_get(self, path, timeout=15):
+        mirrors = [
+            "https://de1.api.radio-browser.info",
+            "https://nl1.api.radio-browser.info",
+            "https://at1.api.radio-browser.info",
+            "https://fr1.api.radio-browser.info",
+        ]
+        last_err = None
+        for base in mirrors:
+            try:
+                url = base + path
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "SDR-Radio/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode())
+                    return data
+            except Exception as e:
+                last_err = e
+                continue
+        raise RuntimeError(last_err or "all mirrors failed")
+
+
     def free_all(self):
         self.stop()
         subprocess.run(["sudo", "systemctl", "stop", "readsb"], stderr=subprocess.DEVNULL)
@@ -2276,7 +3229,7 @@ class App(QMainWindow):
     def _ensure_dongle_ready(self):
         """Called once at startup – reset only if clearly locked."""
         self.log("Checking dongle…")
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.3)
 
@@ -2321,7 +3274,7 @@ class App(QMainWindow):
                 except Exception:
                     pass
                 self._right_expanded = True
-                labels = ["  Library", "  Tools", "  Log"]
+                labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
                 for b, lab in zip(getattr(self, "nav_btns", []), labels):
                     b.setText(lab)
                 if hasattr(self, "right_stack"):
@@ -2332,7 +3285,7 @@ class App(QMainWindow):
                     total = max(900, self.split.width())
                     self.split.setSizes([int(total * 0.28), int(total * 0.50), int(total * 0.22)])
             else:
-                self._restore_right_panel()
+                self._collapse_right_on_start()
         except Exception as e:
             try:
                 self.log(f"restore right: {e}")
@@ -2371,14 +3324,22 @@ class App(QMainWindow):
         p = self.cfg if isinstance(self.cfg, dict) else {}
         # Theme
         self.dark = bool(p.get("dark", False))
-        # Auto song ID
+        # Auto song ID (status only via hover tooltip)
         if hasattr(self, "btn_auto_side"):
             on = bool(p.get("song_id", True))
-            self.btn_auto_side.setChecked(on)
             self.cfg["song_id"] = on
+            self._sync_auto_id_tooltip()
         # Gain already loaded earlier
         # Lyrics panel
         self._lyrics_open = bool(p.get("lyrics_open", False))
+        # Tuner panel (band/mode/gain/freq)
+        self._tuner_open = bool(p.get("tuner_open", True))
+        if hasattr(self, "btn_toggle_tuner"):
+            self.btn_toggle_tuner.blockSignals(True)
+            self.btn_toggle_tuner.setChecked(self._tuner_open)
+            self.btn_toggle_tuner.blockSignals(False)
+            if not getattr(self, "_stream_mode", False):
+                self._set_tuner_visible(self._tuner_open)
         # Right sidebar visible/expanded
         self._right_expanded = bool(p.get("right_expanded", True))
         self._right_visible = bool(p.get("right_visible", True))
@@ -2391,6 +3352,7 @@ class App(QMainWindow):
             self.cfg["lyrics_open"] = bool(
                 getattr(self, "lyrics_toggle", None) and self.lyrics_toggle.isChecked()
             )
+            self.cfg["tuner_open"] = bool(getattr(self, "_tuner_open", True))
             self.cfg["right_expanded"] = bool(getattr(self, "_right_expanded", False))
             rp = getattr(self, "right_panel", None)
             self.cfg["right_visible"] = bool(rp is not None and rp.isVisible())
@@ -2476,33 +3438,64 @@ class App(QMainWindow):
         for i, b in enumerate(self.nav_btns):
             b.setChecked(i == idx)
         self.right_stack.setCurrentIndex(idx)
+        # Keep lyrics icon state in sync with whether Lyrics tab is active
+        if idx == 1:
+            self._lyrics_open = True
+            if hasattr(self, "lyrics_toggle"):
+                self.lyrics_toggle.setChecked(True)
+            for bname in ("btn_lrc", "sp_lrc"):
+                b = getattr(self, bname, None)
+                if b is not None:
+                    b.blockSignals(True)
+                    b.setChecked(True)
+                    b.blockSignals(False)
+            # Ensure sidebar is wide enough if user navigated here
+            try:
+                self._ensure_right_open_for_lyrics()
+            except Exception:
+                pass
+        else:
+            # Leaving lyrics tab via nav closes lyrics mode (icon unchecks)
+            if getattr(self, "_lyrics_open", False):
+                self._lyrics_open = False
+                if hasattr(self, "lyrics_toggle"):
+                    self.lyrics_toggle.setChecked(False)
+                for bname in ("btn_lrc", "sp_lrc"):
+                    b = getattr(self, bname, None)
+                    if b is not None:
+                        b.blockSignals(True)
+                        b.setChecked(False)
+                        b.blockSignals(False)
 
     def _toggle_right_sidebar(self):
         rp = getattr(self, "right_panel", None)
         if rp is None:
             return
-        # Currently hidden → show expanded
-        if not rp.isVisible() or rp.maximumWidth() == 0:
-            rp.setMinimumWidth(200)
-            rp.setMaximumWidth(300)
+        # Currently hidden / collapsed → show expanded
+        if not rp.isVisible() or rp.maximumWidth() == 0 or rp.maximumWidth() <= 60:
+            rp.setMinimumWidth(220)
+            rp.setMaximumWidth(340)
             rp.setVisible(True)
             try:
                 self.split.widget(2).setVisible(True)
             except Exception:
                 pass
             self._right_expanded = True
-            labels = ["  Library", "  Tools", "  Log"]
+            labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
             for b, lab in zip(getattr(self, "nav_btns", []), labels):
                 b.setText(lab)
             if hasattr(self, "right_stack"):
                 self.right_stack.setVisible(True)
+            # Hide center-edge reopen breadcrumb while open
+            if hasattr(self, "btn_show_right"):
+                self.btn_show_right.setVisible(False)
             if hasattr(self, "split"):
                 total = max(900, self.split.width())
                 self.split.setSizes([int(total * 0.28), int(total * 0.50), int(total * 0.22)])
             return
 
-        # Visible → fully hide
-        self._right_expanded = True
+        # Visible → fully hide, show reopen breadcrumb in center edge
+        self._right_expanded = False
         rp.setVisible(False)
         rp.setMinimumWidth(0)
         rp.setMaximumWidth(0)
@@ -2513,9 +3506,24 @@ class App(QMainWindow):
         if hasattr(self, "split"):
             total = max(900, self.split.width())
             self.split.setSizes([int(total * 0.34), int(total * 0.66), 0])
+        # Breadcrumb to open the right panel again
+        if hasattr(self, "btn_show_right"):
+            self.btn_show_right.setVisible(True)
+            self.btn_show_right.raise_()
+            self.btn_show_right.setToolTip("Show side panel")
 
 
     def closeEvent(self, e):
+        # In-process reload replaces this window — skip process teardown
+        if getattr(self, "_closing_for_reload", False):
+            try:
+                app = QApplication.instance()
+                if app is not None:
+                    app.removeEventFilter(self)
+            except Exception:
+                pass
+            e.accept()
+            return
         try:
             self._save_prefs()
         except Exception:
@@ -2524,7 +3532,7 @@ class App(QMainWindow):
             self.stop()
         except Exception:
             pass
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             if getattr(self, "aio_loop", None):
@@ -2539,14 +3547,19 @@ class App(QMainWindow):
 
 
 def main():
+    acquire_single_instance_lock()
     app = QApplication(sys.argv)
     app.setApplicationName("SDR Radio")
     app.setDesktopFileName("sdr-control")
     app.setStyle("Fusion")
     w = App()
+    app._sdr_main = w  # hard ref (also used after in-process reload)
     w.show()
     def cleanup():
-        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+        # Don't tear down if we're mid-reload (shouldn't quit, but be safe)
+        if getattr(getattr(app, "_sdr_main", None), "_closing_for_reload", False):
+            return
+        subprocess.run(["killall", "-9", "rtl_fm", "play", "ffplay", "mpv"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             LOCK.unlink(missing_ok=True)
