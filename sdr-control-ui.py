@@ -2350,15 +2350,16 @@ class App(QMainWindow):
                 proc = subprocess.Popen(
                     ffmpeg_cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     bufsize=0,
                 )
                 self._cc_ffmpeg = proc
 
-                # ~3.5s windows for near-live captions
+                # Continuously drain ffmpeg pipe (large single read() deadlocks when
+                # OS pipe buffer ~64KB fills before 3s of audio is produced).
                 sample_rate = 16000
-                window_sec = 3.5
-                chunk_bytes = int(sample_rate * 2 * window_sec)
+                window_sec = 3.0
+                chunk_bytes = int(sample_rate * 2 * window_sec)  # 16-bit mono
                 import numpy as np
 
                 if kind == "vosk":
@@ -2366,42 +2367,93 @@ class App(QMainWindow):
                     rec = KaldiRecognizer(model, sample_rate)
                     rec.SetWords(False)
 
+                buf = bytearray()
+                windows = 0
+                last_status = time.time()
+
+                def read_some(n=4096):
+                    if not proc.stdout:
+                        return b""
+                    try:
+                        return proc.stdout.read(n) or b""
+                    except Exception:
+                        return b""
+
                 while not stop.is_set() and getattr(self, "playing", False):
-                    raw = proc.stdout.read(chunk_bytes) if proc.stdout else b""
-                    if not raw:
-                        if proc.poll() is not None:
+                    # Drain pipe until we have a full window
+                    while len(buf) < chunk_bytes and not stop.is_set():
+                        if proc.poll() is not None and (not proc.stdout or True):
+                            # process ended — pull remaining
+                            piece = read_some(65536)
+                            if piece:
+                                buf.extend(piece)
                             break
-                        time.sleep(0.05)
+                        piece = read_some(4096)
+                        if piece:
+                            buf.extend(piece)
+                        else:
+                            # brief wait; avoid busy loop
+                            time.sleep(0.02)
+                        # heartbeat so UI is not stuck on bare "Listening…"
+                        if time.time() - last_status > 4.0 and windows == 0:
+                            self.sig.cc.emit("Listening… capturing audio")
+                            last_status = time.time()
+
+                    if len(buf) < sample_rate:  # <0.5s
+                        if proc.poll() is not None:
+                            err = b""
+                            try:
+                                if proc.stderr:
+                                    err = proc.stderr.read() or b""
+                            except Exception:
+                                pass
+                            msg = err.decode("utf-8", "ignore")[-200:] if err else "audio capture ended"
+                            self.sig.cc.emit(f"CC stopped: {msg or 'stream ended'}")
+                            break
                         continue
-                    if len(raw) < sample_rate:  # <0.5s — skip
-                        continue
+
+                    raw = bytes(buf[:chunk_bytes])
+                    del buf[:chunk_bytes]
+                    windows += 1
 
                     text = ""
                     if kind == "faster-whisper":
                         audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                        if float(np.max(np.abs(audio))) < 0.01:
-                            continue  # silence
+                        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+                        if peak < 0.008:
+                            if windows % 3 == 0:
+                                self.sig.cc.emit("Listening… (silence)")
+                            continue
+                        # vad_filter off for live radio — VAD often drops speech on streams
                         segments, _info = model.transcribe(
                             audio,
                             language="en",
-                            vad_filter=True,
+                            vad_filter=False,
                             beam_size=1,
+                            best_of=1,
                             condition_on_previous_text=False,
+                            without_timestamps=True,
                         )
                         parts = [s.text.strip() for s in segments if s.text and s.text.strip()]
                         text = " ".join(parts).strip()
+                        # Filter whisper hallucinations on noise
+                        bad = {"thank you", "thanks for watching", "you", ".", "...", "subtitle"}
+                        if text.lower().strip(" .") in bad:
+                            text = ""
                     elif kind == "vosk":
-                        # Feed in smaller blocks for vosk
                         step = 4000
+                        text = ""
                         for i in range(0, len(raw), step):
                             block = raw[i:i + step]
                             if rec.AcceptWaveform(block):
                                 try:
                                     import json as _json
                                     j = _json.loads(rec.Result())
-                                    text = (j.get("text") or "").strip()
+                                    t = (j.get("text") or "").strip()
+                                    if t:
+                                        text = t
                                 except Exception:
-                                    text = ""
+                                    pass
                         if not text:
                             try:
                                 import json as _json
@@ -2412,9 +2464,15 @@ class App(QMainWindow):
 
                     if text and len(text) > 1:
                         self.sig.cc.emit(text)
+                        self.sig.log.emit(f"CC: {text[:80]}")
+                    elif windows == 1:
+                        self.sig.cc.emit("Listening… transcribing")
+                    elif windows % 4 == 0:
+                        self.sig.cc.emit("Listening…")
 
                 try:
-                    proc.kill()
+                    if proc.poll() is None:
+                        proc.kill()
                 except Exception:
                     pass
             except Exception as e:
@@ -2422,10 +2480,7 @@ class App(QMainWindow):
                     self.sig.cc.emit(f"CC error: {e}")
                     self.sig.log.emit(f"CC error: {e}")
 
-        threading.Thread(target=work, daemon=True).start()
-        # ICY metadata as optional extra line (not primary captions)
-        if url:
-            self._start_icy(url)
+        threading.Thread(target=work, daemon=True, name="sdr-live-cc").start()
 
     def _start_icy(self, url: str):
         """Optional: also watch ICY StreamTitle (metadata), not speech."""
@@ -3510,12 +3565,20 @@ class App(QMainWindow):
             icons = ("btn_hide_right", "btn_auto_side", "btn_theme_side")
             if ev.type() == QEvent.Enter:
                 for b in icons:
-                    if hasattr(self, b):
-                        getattr(self, b).fade(True)
+                    w = getattr(self, b, None)
+                    if w is not None and hasattr(w, "fade"):
+                        try:
+                            w.fade(True)
+                        except Exception:
+                            pass
             elif ev.type() == QEvent.Leave:
                 for b in icons:
-                    if hasattr(self, b):
-                        getattr(self, b).fade(False)
+                    w = getattr(self, b, None)
+                    if w is not None and hasattr(w, "fade"):
+                        try:
+                            w.fade(False)
+                        except Exception:
+                            pass
         return super().eventFilter(obj, ev)
 
     def toggle_left(self, on=None):
