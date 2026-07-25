@@ -566,6 +566,7 @@ class App(QMainWindow):
         self.btn_fav.setFixedSize(36, 36)
         self.btn_fav.setIcon(load_icon("heart"))
         self.btn_fav.setIconSize(QSize(16, 16))
+        self.btn_fav.setCheckable(True)
         self.btn_fav.setEnabled(False)
         self.btn_fav.setToolTip("Bookmark / remove bookmark")
         self.btn_fav.clicked.connect(self.toggle_fav)
@@ -1132,7 +1133,9 @@ class App(QMainWindow):
         self.song = None
         self.genius_url = None
         self.song_l.setText("")
+        self.btn_fav.setCheckable(True)
         self.btn_fav.setEnabled(False)
+        self.btn_fav.setChecked(False)
         self.btn_fav.setIcon(load_icon("heart"))
         self.btn_yt.setEnabled(False)
         self.art.setPixmap(QPixmap())
@@ -1429,6 +1432,7 @@ class App(QMainWindow):
         self.song_l.setText(text)
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
+        self.btn_fav.setChecked(self._is_fav(song))
         self.btn_fav.setIcon(load_icon("heart"))
         self.log(f"♪ {text}")
         self.toast.show_msg(f"♪  {text}")
@@ -1605,12 +1609,12 @@ class App(QMainWindow):
         k = (_norm(self.song.get("title")), _norm(self.song.get("artist")))
         if self._is_fav(self.song):
             self.favs = [s for s in self.favs if (_norm(s.get("title")), _norm(s.get("artist"))) != k]
-            self.btn_fav.setIcon(load_icon("heart"))
+            self.btn_fav.setChecked(False)
             self.toast.show_msg("Removed bookmark")
         else:
             self.favs.insert(0, self.song)
             self.favs = self.favs[:50]
-            self.btn_fav.setIcon(load_icon("heart"))
+            self.btn_fav.setChecked(True)
             self.toast.show_msg("Bookmarked")
         save_json(FAV_F, self.favs)
         self.refresh_favs()
