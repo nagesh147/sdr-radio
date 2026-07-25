@@ -317,7 +317,7 @@ class Collapse(QWidget):
         self.btn = QPushButton()
         self.btn.setObjectName("collapseBtn")
         self.btn.setCursor(Qt.PointingHandCursor)
-        self.btn.setFixedHeight(30)
+        self.btn.setFixedHeight(26)
         self.btn.clicked.connect(self.toggle)
         root.addWidget(self.btn)
         self.body = QWidget()
@@ -506,6 +506,8 @@ class App(QMainWindow):
 
         hero = QFrame()
         hero.setObjectName("card")
+        hero.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        hero.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         hl = QHBoxLayout(hero)
         hl.setContentsMargins(16, 16, 16, 16)
         hl.setSpacing(16)
@@ -513,6 +515,7 @@ class App(QMainWindow):
 
         self.art = QLabel("♪")
         self.art.setFixedSize(132, 132)
+        self.art.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.art.setAlignment(Qt.AlignCenter)
         self.art.setObjectName("art")
         hl.addWidget(self.art)
@@ -590,6 +593,7 @@ class App(QMainWindow):
         # Tuner
         tun = QFrame()
         tun.setObjectName("card")
+        tun.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         tl = QVBoxLayout(tun)
         tl.setContentsMargins(14, 12, 14, 12)
         tl.setSpacing(8)
@@ -651,50 +655,103 @@ class App(QMainWindow):
         self.lyrics.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.lyrics.setPlaceholderText("Lyrics appear here after ID or Lyrics Now")
         lp.addWidget(self.lyrics)
-        ml.addWidget(self.lyrics_panel)
-        ml.addStretch(1)                    # keeps player at top when lyrics closed
+        ml.addWidget(self.lyrics_panel, 1)
+        ml.addStretch(0)                    # keeps player at top when lyrics closed
 
         self.split.addWidget(mid)
 
-        # Right
+        
+        
+        
+        # Right – collapsible sidebar
         right = QWidget()
-        right.setMinimumWidth(220)
+        right.setMinimumWidth(200)
+        right.setMaximumWidth(280)
+        self.right_panel = right
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(6)
-        rh = QHBoxLayout()
-        rh.setContentsMargins(0, 0, 0, 0)
-        rh.setSpacing(4)
-        rh.addStretch()
-        self.btn_hide_right = HoverIcon("panel-right", "Hide side panel")
-        self.btn_hide_right.clicked.connect(lambda: self.toggle_right(False))
-        self.btn_auto_side = HoverIcon("music", "Auto Song ID")
-        self.btn_auto_side.setCheckable(True)
-        self.btn_auto_side.clicked.connect(self._toggle_auto_side)
-        rh.addWidget(self.btn_auto_side)
-        self.btn_theme_side = HoverIcon("moon", "Light / Dark")
-        self.btn_theme_side.clicked.connect(self.toggle_theme)
-        rh.addWidget(self.btn_theme_side)
-        rh.addWidget(self.btn_hide_right)
-        right.installEventFilter(self)
-        rl.addLayout(rh)
+        rl.setContentsMargins(8, 10, 8, 10)
+        rl.setSpacing(2)
 
-        self.col_lib = Collapse("Library", False)
-        tabs = QTabWidget()
+        # Top row: Collapse + Auto ID
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(6)
+        self.btn_collapse_right = QPushButton()
+        self.btn_collapse_right.setObjectName("icon")
+        self.btn_collapse_right.setFixedSize(34, 34)
+        self.btn_collapse_right.setIcon(load_icon("panel-right"))
+        self.btn_collapse_right.setIconSize(QSize(16, 16))
+        self.btn_collapse_right.setToolTip("Collapse sidebar")
+        self.btn_collapse_right.clicked.connect(self._toggle_right_sidebar)
+        top.addWidget(self.btn_collapse_right)
+
+        self.btn_auto_side = QPushButton()
+        self.btn_auto_side.setObjectName("icon")
+        self.btn_auto_side.setFixedSize(34, 34)
+        self.btn_auto_side.setIcon(load_icon("music"))
+        self.btn_auto_side.setIconSize(QSize(16, 16))
+        self.btn_auto_side.setCheckable(True)
+        self.btn_auto_side.setToolTip("Auto Song ID")
+        self.btn_auto_side.clicked.connect(self._toggle_auto_side)
+        top.addWidget(self.btn_auto_side)
+        top.addStretch()
+        rl.addLayout(top)
+        rl.addSpacing(8)
+
+        # Navigation list (Library / Tools / Log / Theme)
+        self.nav_btns = []
+        nav_items = [
+            ("Library", "bookmark", 0),
+            ("Tools",   "settings", 1),
+            ("Log",     "history",  2),
+            ("Theme",   "moon",     3),
+        ]
+        for label, icon_name, idx in nav_items:
+            btn = QPushButton(f"  {label}")
+            btn.setObjectName("navBtn")
+            btn.setIcon(load_icon(icon_name))
+            btn.setIconSize(QSize(16, 16))
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(38)
+            if idx == 3:   # Theme is an action, not a page
+                btn.clicked.connect(self.toggle_theme)
+            else:
+                btn.clicked.connect(lambda checked, i=idx: self._switch_right_tab(i))
+            rl.addWidget(btn)
+            self.nav_btns.append(btn)
+
+        if self.nav_btns:
+            self.nav_btns[0].setChecked(True)
+
+        rl.addSpacing(6)
+
+        # Content stack
+        from PyQt5.QtWidgets import QStackedWidget
+        self.right_stack = QStackedWidget()
+
+        # 0 – Library
+        lib_w = QWidget()
+        lib_l = QVBoxLayout(lib_w)
+        lib_l.setContentsMargins(0, 4, 0, 0)
+        lib_tabs = QTabWidget()
         self.hist = QListWidget()
         self.hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.hist.itemDoubleClicked.connect(self.open_hist)
-        tabs.addTab(self.hist, "History")
+        lib_tabs.addTab(self.hist, "History")
         self.fav_list = QListWidget()
         self.fav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.fav_list.itemDoubleClicked.connect(self.open_fav)
         self.fav_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.fav_list.customContextMenuRequested.connect(self.fav_menu)
-        tabs.addTab(self.fav_list, "Bookmarks")
-        self.col_lib.body_l.addWidget(tabs)
-        rl.addWidget(self.col_lib, 1)
+        lib_tabs.addTab(self.fav_list, "Bookmarks")
+        lib_l.addWidget(lib_tabs)
+        self.right_stack.addWidget(lib_w)
 
-        self.col_tools = Collapse("Tools", False)
+        # 1 – Tools
+        tools_w = QWidget()
+        tools_l = QVBoxLayout(tools_w)
+        tools_l.setContentsMargins(4, 8, 4, 4)
         g = QGridLayout()
         g.setSpacing(8)
         for i, (txt, slot, tip) in enumerate([
@@ -703,24 +760,32 @@ class App(QMainWindow):
             ("Weather", self.start_wx, "SatDump"),
             ("AIS", self.start_ais, "Marine AIS"),
             ("Test", self.test_dongle, "rtl_test"),
-            ("Stop", self.free_all, "Stop all SDR apps"),
+            ("Stop All", self.free_all, "Stop all SDR apps"),
         ]):
             b = QPushButton(txt)
             b.setObjectName("pill")
             b.setToolTip(tip)
             b.clicked.connect(slot)
             g.addWidget(b, i // 2, i % 2)
-        self.col_tools.body_l.addLayout(g)
-        rl.addWidget(self.col_tools)
+        tools_l.addLayout(g)
+        tools_l.addStretch(1)
+        self.right_stack.addWidget(tools_w)
 
-        self.col_log = Collapse("Log", False)
+        # 2 – Log
+        log_w = QWidget()
+        log_l = QVBoxLayout(log_w)
+        log_l.setContentsMargins(0, 4, 0, 0)
         self.logv = QTextEdit()
         self.logv.setReadOnly(True)
-        self.logv.setFixedHeight(90)
-        self.col_log.body_l.addWidget(self.logv)
-        rl.addWidget(self.col_log)
-        rl.addStretch(1)
+        log_l.addWidget(self.logv)
+        self.right_stack.addWidget(log_w)
+
+        rl.addWidget(self.right_stack, 1)
+        self._right_expanded = True
         self.split.addWidget(right)
+
+
+
 
         self.split.setStretchFactor(0, 3)
         self.split.setStretchFactor(1, 5)
@@ -777,6 +842,23 @@ class App(QMainWindow):
                 QPushButton#icon:checked { background:#30d158; color:#000; }
                 QPushButton#icon:disabled { color:#636366; }
                 QPushButton#pill { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:14px; padding:10px; }
+                QPushButton#navBtn {
+                    background: transparent;
+                    border: none;
+                    border-radius: 8px;
+                    text-align: left;
+                    padding: 8px 10px;
+                    color: #f5f5f7;
+                }
+                QPushButton#navBtn:checked {
+                    background: rgba(48, 209, 88, 0.25);
+                    color: #30d158;
+                    font-weight: 600;
+                }
+                QPushButton#navBtn:hover {
+                    background: rgba(255,255,255,0.06);
+                }
+
                 QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#8e8e93; padding:4px 0; }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
@@ -807,6 +889,23 @@ class App(QMainWindow):
                 QPushButton#icon:checked { background:#30d158; color:#fff; }
                 QPushButton#icon:disabled { color:#aeaeb2; }
                 QPushButton#pill { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:14px; padding:10px; }
+                QPushButton#navBtn {
+                    background: transparent;
+                    border: none;
+                    border-radius: 8px;
+                    text-align: left;
+                    padding: 8px 10px;
+                    color: #1d1d1f;
+                }
+                QPushButton#navBtn:checked {
+                    background: rgba(48, 209, 88, 0.18);
+                    color: #0b3d0b;
+                    font-weight: 600;
+                }
+                QPushButton#navBtn:hover {
+                    background: rgba(0,0,0,0.04);
+                }
+
                 QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#6e6e73; padding:4px 0; }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
@@ -1678,15 +1777,15 @@ class App(QMainWindow):
             self.btn_fav.setEnabled(True)
             self.btn_yt.setEnabled(True)
 
+
     def _toggle_lyrics_panel(self):
         show = self.lyrics_toggle.isChecked()
         self.lyrics_toggle.setText(("▾  Lyrics" if show else "▸  Lyrics"))
         self.lyrics_panel.setVisible(show)
         if show:
-            # Expand lyrics to take remaining vertical space
-            self.lyrics_panel.setMinimumHeight(220)
+            self.lyrics_panel.setMinimumHeight(200)
             self.lyrics_panel.setMaximumHeight(16777215)
-            self.lyrics.setMinimumHeight(200)
+            self.lyrics.setMinimumHeight(180)
         else:
             self.lyrics_panel.setMinimumHeight(0)
             self.lyrics_panel.setMaximumHeight(0)
@@ -1727,7 +1826,8 @@ class App(QMainWindow):
         if left is not None and obj is left:
             if ev.type() == QEvent.Enter:
                 if hasattr(self, "btn_hide_left"):
-                    self.btn_hide_left.fade(True)
+                    try: self.btn_hide_left.fade(True)
+                    except Exception: pass
             elif ev.type() == QEvent.Leave:
                 if hasattr(self, "btn_hide_left"):
                     self.btn_hide_left.fade(False)
@@ -1878,6 +1978,34 @@ class App(QMainWindow):
                 self.play(float(st0["freq"]), st0.get("mode") or mode_for_freq(st0["freq"]), st0["name"])
         except Exception as e:
             self.log("Startup error: %s" % e)
+
+
+    def _switch_right_tab(self, idx):
+        for i, b in enumerate(self.nav_btns):
+            # Theme button (index 3) is never "page checked"
+            if i == 3:
+                continue
+            b.setChecked(i == idx)
+        if idx <= 2:
+            self.right_stack.setCurrentIndex(idx)
+
+    def _toggle_right_sidebar(self):
+        self._right_expanded = not getattr(self, "_right_expanded", True)
+        if self._right_expanded:
+            self.right_panel.setMinimumWidth(200)
+            self.right_panel.setMaximumWidth(280)
+            labels = ["  Library", "  Tools", "  Log", "  Theme"]
+            for b, lab in zip(self.nav_btns, labels):
+                b.setText(lab)
+            self.right_stack.setVisible(True)
+        else:
+            self.right_panel.setMinimumWidth(52)
+            self.right_panel.setMaximumWidth(56)
+            for b in self.nav_btns:
+                b.setText("")
+            self.right_stack.setVisible(False)
+            for b in self.nav_btns:
+                b.setText("")   # icon only
 
     def closeEvent(self, e):
         self.stop()
