@@ -141,12 +141,6 @@ class Toast(QLabel):
         self.show(); self.raise_(); self._t.start(ms)
 
 
-
-
-
-
-
-
 class FreqScale(QWidget):
     changed = pyqtSignal(float)
     released = pyqtSignal(float)
@@ -385,7 +379,8 @@ class App(QMainWindow):
         self.log("Ready")
         self.log("Bands: " + ", ".join(b[0] for b in BANDS))
         if self.cfg.get("song_id"):
-            (hasattr(self, 'btn_auto') and (hasattr(self, 'btn_auto') and (hasattr(self, 'btn_auto') and self.btn_auto.setChecked(True)) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))
+            if hasattr(self, 'btn_auto_side'):
+                self.btn_auto_side.setChecked(True)
 
     def _clean_stations(self, data):
         out = {}
@@ -414,7 +409,6 @@ class App(QMainWindow):
         self.split.setHandleWidth(6)
         self.split.setChildrenCollapsible(True)
         root.addWidget(self.split, 1)
-
 
         # --- Left: stations (resizable) ---
         left = QFrame(); left.setObjectName("card")
@@ -455,13 +449,9 @@ class App(QMainWindow):
         self.stations_list.model().rowsMoved.connect(self._stations_reordered)
         self.stations_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.stations_list.customContextMenuRequested.connect(self.stations_menu)
-
-        self.stations_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.stations_list.customContextMenuRequested.connect(self.stations_menu)
         self.stations_list.itemEntered.connect(lambda it: QToolTip.showText(
             QCursor.pos(), it.toolTip() or it.text(), self.stations_list))
         row.addWidget(self.stations_list, 1)
-        # wrap row into splitter-like stretch
         ll.addLayout(row, 1)
         self.split.addWidget(left)
 
@@ -487,7 +477,6 @@ class App(QMainWindow):
         self.btn_show_right.clicked.connect(lambda: self.toggle_right(True))
         edge.addWidget(self.btn_show_right)
         ml.addLayout(edge)
-
 
         hero = QFrame(); hero.setObjectName("card")
         hl = QHBoxLayout(hero)
@@ -636,7 +625,6 @@ class App(QMainWindow):
         right.installEventFilter(self)
         rl.addLayout(rh)
 
-
         self.col_lib = Collapse("Library", False)
         tabs = QTabWidget()
         self.hist = QListWidget()
@@ -680,9 +668,7 @@ class App(QMainWindow):
         self.split.setStretchFactor(2, 3)
         self.split.setSizes([360, 480, 260])
 
-
-        
-        # Band combo: text change + activated (user selection)
+        # Band: use activated only
         try:
             self.band.currentTextChanged.disconnect()
         except Exception:
@@ -692,44 +678,13 @@ class App(QMainWindow):
         except Exception:
             pass
         self.band.activated.connect(self.on_band)
-        try:
-            self.freq.valueChanged.disconnect()
-        except Exception:
-            pass
         self.freq.valueChanged.connect(self.on_freq)
-        try:
-            self.scale.changed.disconnect()
-        except Exception:
-            pass
-
-
-        # Band: use activated only (fires on user choice every time)
-        try:
-            self.band.currentTextChanged.disconnect()
-        except Exception:
-            pass
-        try:
-            self.band.activated[str].disconnect()
-        except Exception:
-            pass
-        try:
-            self.band.activated[int].disconnect()
-        except Exception:
-            pass
-        try:
-            self.band.activated.disconnect()
-        except Exception:
-            pass
-        self.band.activated.connect(self.on_band)
-        self.freq.valueChanged.connect(self.on_freq)
-
 
         # Startup station
         su = self.cfg.get("startup")
         if isinstance(su, dict) and su.get("freq"):
             try:
                 if su.get("cat") and su["cat"] in self.stations:
-                    # select category
                     for i in range(self.cats.count()):
                         if self.cats.item(i).text() == su["cat"]:
                             self.cats.setCurrentRow(i)
@@ -741,8 +696,6 @@ class App(QMainWindow):
                 pass
 
         self.statusBar().showMessage("Ready")
-        from PyQt5.QtCore import QTimer as _QTimer
-        _QTimer.singleShot(400, self._apply_startup)
         from PyQt5.QtCore import QTimer as _QTimer
         _QTimer.singleShot(400, self._apply_startup)
         QToolTip.setFont(QFont("Sans", 10))
@@ -784,7 +737,6 @@ class App(QMainWindow):
                 QSplitter::handle { background:#2c2c2e; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#8e8e93; padding:8px 12px; }
                 QTabBar::tab:selected { color:#f5f5f7; }
-                
                 QFrame#card {
                     background: #1c1c1e;
                     border: none;
@@ -805,7 +757,6 @@ class App(QMainWindow):
                     padding: 7px 12px;
                     color: #f5f5f7;
                 }
-
                 QStatusBar { color:#8e8e93; background:#000; }
                 QToolTip {
                     background-color: #2c2c2e; color: #f5f5f7;
@@ -848,7 +799,6 @@ class App(QMainWindow):
                 QSplitter::handle { background:#e5e5ea; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#6e6e73; padding:8px 12px; }
                 QTabBar::tab:selected { color:#1d1d1f; }
-                
                 QFrame#card {
                     background: #ffffff;
                     border: none;
@@ -868,7 +818,6 @@ class App(QMainWindow):
                     border-radius: 10px;
                     padding: 7px 12px;
                 }
-
                 QStatusBar { color:#6e6e73; background:#f5f5f7; }
                 QToolTip {
                     background-color: #1d1d1f; color: #f5f5f7;
@@ -890,7 +839,6 @@ class App(QMainWindow):
         self._style()
         self.scale.update()
 
-
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.toast.isVisible():
@@ -902,14 +850,6 @@ class App(QMainWindow):
 
     def _on_log(self, line):
         self.logv.append(line); self.logv.moveCursor(QTextCursor.End)
-
-    # band / freq
-
-
-
-
-
-
 
     def _sync_band(self, f):
         name = band_for_freq(float(f))
@@ -923,7 +863,6 @@ class App(QMainWindow):
                 self.band.blockSignals(False)
         finally:
             self._band_lock = False
-
 
     def on_band(self, *args):
         if getattr(self, "_band_lock", False):
@@ -973,7 +912,6 @@ class App(QMainWindow):
         except Exception as ex:
             self.log(str(ex))
 
-
     def on_scale(self, v):
         """Drag: update spinbox/mode only (no audio restart)."""
         v = round(float(v), 1)
@@ -989,23 +927,6 @@ class App(QMainWindow):
             self._sync_band(v)
         except Exception:
             pass
-
-    def on_scale_release(self, v=None):
-        """Mouse release / wheel: retune radio if playing."""
-        try:
-            v = float(self.freq.value() if v is None else v)
-        except Exception:
-            return
-        m = self.mode.currentText() or mode_for_freq(v)
-        print("[SCALE_RELEASE]", v, m, "playing=", getattr(self, "playing", False), flush=True)
-        if not getattr(self, "playing", False):
-            # still update UI; user can press play
-            self.log("Scale %.1f — press Play to tune" % v)
-            return
-        try:
-            self.play(v, m, "%.1f MHz" % v)
-        except Exception as ex:
-            self.log(str(ex))
 
     def on_scale_release(self, v=None):
         try:
@@ -1028,7 +949,6 @@ class App(QMainWindow):
     def commit_tune(self):
         v = float(self.freq.value())
         m = self.mode.currentText() or mode_for_freq(v)
-        print("[COMMIT]", v, m, "playing=", getattr(self, "playing", False), flush=True)
         if not getattr(self, "playing", False):
             return
         try:
@@ -1058,9 +978,6 @@ class App(QMainWindow):
             it.setData(Qt.UserRole, s)
             self.stations_list.addItem(it)
         self.stations_list.blockSignals(False)
-
-
-
 
     def stations_menu(self, pos):
         from PyQt5.QtWidgets import QMenu, QInputDialog, QMessageBox
@@ -1194,7 +1111,7 @@ class App(QMainWindow):
         self.song = None; self.genius_url = None
         self.song_l.setText("")
         self.btn_fav.setEnabled(False); self.btn_fav.setText("♡")
-        self.btn_yt.setEnabled(False); pass  # genius removed
+        self.btn_yt.setEnabled(False)
         self.art.setPixmap(QPixmap()); self.art.setText("♪")
         self.lyrics.setPlainText(""); self.lrc = []; self.lrc_timer.stop()
 
@@ -1235,17 +1152,12 @@ class App(QMainWindow):
         else:
             threading.Thread(target=lambda: (time.sleep(8), self.playing and self.id_now()), daemon=True).start()
 
-
     def _toggle_auto_side(self):
         on = not bool(self.cfg.get("song_id", True))
         self.cfg["song_id"] = on
         save_json(CONFIG, self.cfg)
         if hasattr(self, "btn_auto_side"):
             self.btn_auto_side.setChecked(on)
-        if hasattr(self, "btn_auto"):
-            self.btn_auto.blockSignals(True)
-            self.btn_auto.setChecked(on)
-            self.btn_auto.blockSignals(False)
         self.on_auto(on)
         self.toast.show_msg("Auto Song ID " + ("on" if on else "off"))
 
@@ -1389,13 +1301,11 @@ class App(QMainWindow):
         self.song_l.setText(text)
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
-        pass  # genius removed
         self.btn_fav.setText("♥" if self._is_fav(song) else "♡")
         self.log(f"♪ {text}"); self.toast.show_msg(f"♪  {text}")
         self.history.insert(0, song); self.history = self.history[:100]
         save_json(HIST_F, self.history); self.refresh_hist()
         threading.Thread(target=self._post, args=(song,), daemon=True).start()
-
 
     def _post(self, song):
         """Album art + lyrics always after any successful ID."""
@@ -1428,8 +1338,6 @@ class App(QMainWindow):
         except Exception:
             pass
 
-
-
     def on_lyrics(self, text):
         self.lyrics.setPlainText(text or "")
         if text and not text.startswith("No lyrics") and not text.startswith("Loading"):
@@ -1439,7 +1347,6 @@ class App(QMainWindow):
             if getattr(self, "lrc", None):
                 self.lrc_t0 = time.time()
                 self.lrc_timer.start(400)
-
 
     def _tick_lrc(self):
         if not self.lrc or self.lrc_t0 is None: return
@@ -1510,37 +1417,61 @@ class App(QMainWindow):
             self.art.setText("♪")
 
     def fetch_lrc(self, artist, title):
+        """Fetch lyrics from LRCLIB using multi-strategy search inspired by LRCGET
+        (https://github.com/tranxuanthang/lrcget — official LRCLIB client)."""
+        headers = {
+            "User-Agent": "SDR-Radio/1.0 (https://github.com/nagesh147/sdr-radio; LRCLIB client inspired by LRCGET)"
+        }
+        queries = [
+            ("track+artist", {"track_name": title, "artist_name": artist}),
+            ("q=artist+title", {"q": f"{artist} {title}".strip()}),
+            ("q=title", {"q": title}),
+        ]
         try:
-            q = urllib.parse.urlencode({"track_name": title, "artist_name": artist})
-            req = urllib.request.Request(f"https://lrclib.net/api/search?{q}",
-                                         headers={"User-Agent": "SDR-Radio/1.0"})
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                results = json.loads(resp.read().decode())
-            if not results:
-                q2 = urllib.parse.urlencode({"q": f"{artist} {title}"})
-                req2 = urllib.request.Request(f"https://lrclib.net/api/search?{q2}",
-                                             headers={"User-Agent": "SDR-Radio/1.0"})
-                with urllib.request.urlopen(req2, timeout=12) as resp2:
-                    results = json.loads(resp2.read().decode())
-            if not results:
-                self.log("LRCLIB: no results")
-                return ""
-            best = results[0]
-            plain = (best.get("plainLyrics") or "").strip()
-            synced = (best.get("syncedLyrics") or "").strip()
-            self.log(f"LRCLIB: hit {best.get('trackName','?')} / {best.get('artistName','?')}")
-            if synced:
-                parsed = []
-                for ln in synced.splitlines():
-                    m = re.match(r"\[(\d{1,2}):(\d{2})(?:\.(\d+))?\]\s*(.*)", ln.strip())
-                    if m and m.group(4).strip():
-                        ts = int(m.group(1))*60 + int(m.group(2)) + float("0."+(m.group(3) or "0"))
-                        parsed.append((ts, m.group(4).strip()))
-                self.lrc = parsed
-                return "\n".join(x[1] for x in parsed) or plain
-            self.lrc = []; return plain
-        except Exception:
-            self.lrc = []; return ""
+            for label, params in queries:
+                if not any(v for v in params.values() if v):
+                    continue
+                try:
+                    q = urllib.parse.urlencode({k: v for k, v in params.items() if v})
+                    req = urllib.request.Request(
+                        f"https://lrclib.net/api/search?{q}",
+                        headers=headers,
+                    )
+                    with urllib.request.urlopen(req, timeout=12) as resp:
+                        results = json.loads(resp.read().decode())
+                    if not results:
+                        continue
+                    # Prefer results that have synced lyrics (same priority as LRCGET)
+                    best = None
+                    for r in results:
+                        if r.get("syncedLyrics"):
+                            best = r
+                            break
+                    if not best:
+                        best = results[0]
+                    plain = (best.get("plainLyrics") or "").strip()
+                    synced = (best.get("syncedLyrics") or "").strip()
+                    self.log(f"LRCLIB ({label}): {best.get('trackName','?')} / {best.get('artistName','?')}")
+                    if synced:
+                        parsed = []
+                        for ln in synced.splitlines():
+                            m = re.match(r"\[(\d{1,2}):(\d{2})(?:\.(\d+))?\]\s*(.*)", ln.strip())
+                            if m and m.group(4).strip():
+                                ts = int(m.group(1))*60 + int(m.group(2)) + float("0."+(m.group(3) or "0"))
+                                parsed.append((ts, m.group(4).strip()))
+                        self.lrc = parsed
+                        return "\n".join(x[1] for x in parsed) or plain
+                    self.lrc = []
+                    return plain
+                except Exception as e:
+                    self.log(f"LRCLIB {label}: {e}")
+                    continue
+            self.log("LRCLIB: no results after all attempts")
+            return ""
+        except Exception as e:
+            self.lrc = []
+            self.log(f"LRCLIB error: {e}")
+            return ""
 
     def fetch_gn_meta(self, artist, title):
         if not self.gn_key: return None
@@ -1606,7 +1537,6 @@ class App(QMainWindow):
             self.btn_fav.setText("♡")
         self.toast.show_msg("Removed bookmark")
 
-
     def refresh_hist(self):
         self.hist.clear()
         self.hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1633,7 +1563,6 @@ class App(QMainWindow):
             it.setData(Qt.UserRole, s)
             self.fav_list.addItem(it)
 
-
     def open_hist(self, item):
         s = item.data(Qt.UserRole)
         if not s:
@@ -1648,21 +1577,18 @@ class App(QMainWindow):
         self.btn_yt.setEnabled(True)
         self.btn_fav.setText("♥" if self._is_fav(s) else "♡")
 
-
     def open_fav(self, item):
         s = item.data(Qt.UserRole)
         if s:
             self.song = s
             self.song_l.setText(f"{s.get('artist')} — {s.get('title')}")
-            self.btn_fav.setEnabled(True); self.btn_yt.setEnabled(True); pass  # genius removed
+            self.btn_fav.setEnabled(True); self.btn_yt.setEnabled(True)
             self.btn_fav.setText("♥")
-
 
     def _toggle_lyrics_panel(self):
         """Open/close lyrics in a fixed-height slot so the player card does not move."""
         show = self.lyrics_toggle.isChecked()
         self.lyrics_toggle.setText(("▾  Lyrics" if show else "▸  Lyrics"))
-        # Fixed slot: always reserves 0 or LYRICS_H — stretch below absorbs the delta
         LYRICS_H = 168
         if show:
             self.lyrics_panel.setVisible(True)
@@ -1674,7 +1600,6 @@ class App(QMainWindow):
             self.lyrics_panel.setMaximumHeight(0)
 
     def lyrics_now(self):
-
         """Force-fetch lyrics for current song (or last identified)."""
         if not self.song:
             self.toast.show_msg("Identify a song first")
@@ -1699,35 +1624,12 @@ class App(QMainWindow):
                             text += "\n\n— Genius"
                 except Exception as e:
                     self.log(f"Genius lyrics: {e}")
-            if not text:
-                # broader LRCLIB search
-                try:
-                    q = urllib.parse.urlencode({"q": f"{artist} {title}"})
-                    req = urllib.request.Request(
-                        f"https://lrclib.net/api/search?{q}",
-                        headers={"User-Agent": "SDR-Radio/1.0"},
-                    )
-                    with urllib.request.urlopen(req, timeout=12) as resp:
-                        results = json.loads(resp.read().decode())
-                    if results:
-                        best = results[0]
-                        text = (best.get("plainLyrics") or best.get("syncedLyrics") or "").strip()
-                        if text and "[" in text[:20]:
-                            # strip LRC tags
-                            text = re.sub(r"\[\d{1,2}:\d{2}(?:\.\d+)?\]", "", text)
-                            text = "\n".join(ln.strip() for ln in text.splitlines() if ln.strip())
-                except Exception as e:
-                    self.log(f"LRCLIB q-search: {e}")
             self.sig.lyrics.emit(text or "No lyrics found.")
             if text:
                 QTimer.singleShot(0, lambda: self.toast.show_msg("Lyrics loaded"))
             else:
                 QTimer.singleShot(0, lambda: self.toast.show_msg("No lyrics found"))
         threading.Thread(target=task, daemon=True).start()
-
-
-
-
 
     def eventFilter(self, obj, ev):
         from PyQt5.QtCore import QEvent
@@ -1751,7 +1653,6 @@ class App(QMainWindow):
                     if hasattr(self, b):
                         getattr(self, b).fade(False)
         return super().eventFilter(obj, ev)
-
 
     def toggle_left(self, on=None):
         left = self.split.widget(0)
@@ -1797,7 +1698,6 @@ class App(QMainWindow):
         except Exception as e:
             self.log(f"split: {e}")
 
-
     def start_sdr(self):
         self.stop()
         subprocess.Popen(["sdrpp"])
@@ -1834,7 +1734,6 @@ class App(QMainWindow):
         subprocess.run(["killall","-9","sdrpp","satdump","satdump-ui","AIS-catcher"], stderr=subprocess.DEVNULL)
         self.toast.show_msg("All SDR processes stopped")
 
-
     def _apply_startup(self):
         """Play configured default station, else first India FM station."""
         try:
@@ -1845,7 +1744,6 @@ class App(QMainWindow):
         name = su.get("name")
         freq = su.get("freq")
         mode = su.get("mode")
-        # Prefer matching stations list UI + play_item path
         try:
             if cat and cat in self.stations and hasattr(self, "cats"):
                 items = [self.cats.item(i).text() for i in range(self.cats.count())]
@@ -1855,13 +1753,11 @@ class App(QMainWindow):
             if name and hasattr(self, "stations_list"):
                 for i in range(self.stations_list.count()):
                     it = self.stations_list.item(i)
-                    s = it.data(0x0100)  # Qt.UserRole often 256
-                    # fallback: Qt.UserRole
                     try:
                         from PyQt5.QtCore import Qt as _Qt
                         s = it.data(_Qt.UserRole)
                     except Exception:
-                        pass
+                        s = it.data(0x0100)
                     if isinstance(s, dict) and s.get("name") == name:
                         self.stations_list.setCurrentRow(i)
                         self.play_item(it)
@@ -1882,7 +1778,6 @@ class App(QMainWindow):
                 self.play(float(freq), m, name or ("%.1f MHz" % float(freq)))
                 self.log("Startup → %s %.1f" % (name or "", float(freq)))
                 return
-            # fallback: first station of first category
             if self.stations:
                 cat0 = next(iter(self.stations))
                 st0 = self.stations[cat0][0]
