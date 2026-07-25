@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.lock
+radio_config.json
+stations.json
+song_history.json
+song_favorites.json
+acoustid_api_key.txt
+genius_api_key.txt
+snippets/
+art/
+*.bak*
+*.bak_*

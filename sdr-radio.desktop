@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=SDR Radio
+Comment=RTL-SDR radio player
+Exec=python3 %h/SDR-Tools/sdr-control-ui.py
+Icon=audio-headphones
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=sdr-control-ui
