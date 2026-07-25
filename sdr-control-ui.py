@@ -1138,14 +1138,15 @@ class App(QMainWindow):
         rl.addLayout(top)
         rl.addSpacing(8)
 
-        # Navigation list (Library / Lyrics / Tools / Log)
+        # Navigation list (Library / Lyrics / Captions / Tools / Log)
         self.nav_btns = []
-        self._nav_labels = ["  Library", "  Lyrics", "  Tools", "  Log"]
+        self._nav_labels = ["  Library", "  Lyrics", "  Captions", "  Tools", "  Log"]
         nav_items = [
-            ("Library", "bookmark", 0),
-            ("Lyrics",  "lyrics",   1),
-            ("Tools",   "settings", 2),
-            ("Log",     "history",  3),
+            ("Library",  "bookmark", 0),
+            ("Lyrics",   "lyrics",   1),
+            ("Captions", "music",    2),  # live CC transcript
+            ("Tools",    "settings", 3),
+            ("Log",      "history",  4),
         ]
         for label, icon_name, idx in nav_items:
             btn = QPushButton(f"  {label}")
@@ -1204,7 +1205,34 @@ class App(QMainWindow):
         lp.addWidget(self.lyrics, 1)
         self.right_stack.addWidget(self.lyrics_panel)
 
-        # 2 – Tools
+        # 2 – Captions / live CC (same style as Lyrics)
+        self.cc_panel = QFrame()
+        self.cc_panel.setObjectName("card")
+        self.cc_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        cp = QVBoxLayout(self.cc_panel)
+        cp.setContentsMargins(8, 6, 8, 6)
+        cp.setSpacing(6)
+        cc_hdr_row = QHBoxLayout()
+        cc_hdr = QLabel("Captions")
+        cc_hdr.setObjectName("h")
+        cc_hdr.setStyleSheet("font-weight:600; font-size:13px;")
+        cc_hdr_row.addWidget(cc_hdr)
+        cc_hdr_row.addStretch()
+        self.btn_cc_clear = QPushButton("Clear")
+        self.btn_cc_clear.setObjectName("collapseBtn")
+        self.btn_cc_clear.setCursor(Qt.PointingHandCursor)
+        self.btn_cc_clear.setToolTip("Clear caption history")
+        self.btn_cc_clear.clicked.connect(self._clear_cc_panel)
+        cc_hdr_row.addWidget(self.btn_cc_clear)
+        cp.addLayout(cc_hdr_row)
+        self.cc_view = QTextEdit()
+        self.cc_view.setReadOnly(True)
+        self.cc_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.cc_view.setPlaceholderText("")
+        cp.addWidget(self.cc_view, 1)
+        self.right_stack.addWidget(self.cc_panel)
+
+        # 3 – Tools
         tools_w = QWidget()
         tools_l = QVBoxLayout(tools_w)
         tools_l.setContentsMargins(4, 8, 4, 4)
@@ -1227,7 +1255,7 @@ class App(QMainWindow):
         tools_l.addStretch(1)
         self.right_stack.addWidget(tools_w)
 
-        # 3 – Log
+        # 4 – Log
         log_w = QWidget()
         log_l = QVBoxLayout(log_w)
         log_l.setContentsMargins(0, 4, 0, 0)
@@ -2024,8 +2052,17 @@ class App(QMainWindow):
                 self.cc_bar.setText("Starting live captions…")
             else:
                 self.cc_bar.setText("")
-        if on and self.playing:
-            self._start_live_cc(getattr(self, "_stream_url", None))
+        if on:
+            # Open right pane Captions tab (like Lyrics)
+            try:
+                self._ensure_right_open_for_lyrics()
+                self._switch_right_tab(2)
+            except Exception:
+                pass
+            if hasattr(self, "cc_view") and not (self.cc_view.toPlainText() or "").strip():
+                self.cc_view.setPlainText("Starting live captions…\n")
+            if self.playing:
+                self._start_live_cc(getattr(self, "_stream_url", None))
         else:
             self._stop_live_cc()
         try:
@@ -2033,20 +2070,46 @@ class App(QMainWindow):
         except Exception:
             pass
 
+    def _clear_cc_panel(self):
+        self._cc_history = []
+        if hasattr(self, "cc_view"):
+            self.cc_view.clear()
+        if hasattr(self, "cc_bar"):
+            self.cc_bar.setText("" if not getattr(self, "_cc_on", False) else "…")
+
     def _on_cc_text(self, text: str):
         if not getattr(self, "_cc_on", False):
             return
         t = (text or "").strip()
         if not t:
             return
+        # Skip pure status lines flooding the panel once listening has started
+        prev = getattr(self, "_cc_history", [])
+        if prev and prev[-1] == t:
+            return
+        prev = prev + [t]
+        # Keep a longer transcript in the right panel (like lyrics)
+        if len(prev) > 200:
+            prev = prev[-200:]
+        self._cc_history = prev
+
+        # Compact strip under the player (last few lines)
         if hasattr(self, "cc_bar"):
             self.cc_bar.setVisible(True)
-            # Keep a short rolling history of captions
-            prev = getattr(self, "_cc_history", [])
-            if not prev or prev[-1] != t:
-                prev = (prev + [t])[-3:]
-                self._cc_history = prev
-            self.cc_bar.setText("  ·  ".join(prev))
+            self.cc_bar.setText("  ·  ".join(prev[-3:]))
+
+        # Full transcript in right Captions pane
+        if hasattr(self, "cc_view"):
+            stamp = datetime.now().strftime("%H:%M:%S")
+            # Drop the initial placeholder
+            cur = (self.cc_view.toPlainText() or "").strip()
+            if cur.startswith("Starting live captions"):
+                self.cc_view.clear()
+            self.cc_view.append(f"[{stamp}]  {t}")
+            try:
+                self.cc_view.moveCursor(QTextCursor.End)
+            except Exception:
+                pass
 
     def _set_cc_text(self, text: str):
         try:
@@ -3218,16 +3281,21 @@ class App(QMainWindow):
             except Exception:
                 pass
             self._right_expanded = True
-            labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
+            labels = getattr(
+                self, "_nav_labels",
+                ["  Library", "  Lyrics", "  Captions", "  Tools", "  Log"],
+            )
             for b, lab in zip(getattr(self, "nav_btns", []), labels):
                 b.setText(lab)
             if hasattr(self, "right_stack"):
                 self.right_stack.setVisible(True)
+            if hasattr(self, "btn_show_right"):
+                self.btn_show_right.setVisible(False)
             if hasattr(self, "split"):
                 total = max(900, self.split.width())
                 self.split.setSizes([int(total * 0.26), int(total * 0.48), int(total * 0.26)])
         else:
-            # Already open — widen a bit for lyrics
+            # Already open — widen a bit for lyrics/captions
             try:
                 if rp.maximumWidth() < 300:
                     rp.setMinimumWidth(240)
@@ -3929,7 +3997,7 @@ class App(QMainWindow):
                 except Exception:
                     pass
                 self._right_expanded = True
-                labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
+                labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Captions", "  Tools", "  Log"])
                 for b, lab in zip(getattr(self, "nav_btns", []), labels):
                     b.setText(lab)
                 if hasattr(self, "right_stack"):
@@ -4145,7 +4213,7 @@ class App(QMainWindow):
             except Exception:
                 pass
             self._right_expanded = True
-            labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Tools", "  Log"])
+            labels = getattr(self, "_nav_labels", ["  Library", "  Lyrics", "  Captions", "  Tools", "  Log"])
             for b, lab in zip(getattr(self, "nav_btns", []), labels):
                 b.setText(lab)
             if hasattr(self, "right_stack"):
