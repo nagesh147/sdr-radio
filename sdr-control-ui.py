@@ -643,15 +643,17 @@ class App(QMainWindow):
         self.lyrics_panel = QFrame()
         self.lyrics_panel.setObjectName("card")
         self.lyrics_panel.setVisible(False)
+        self.lyrics_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         lp = QVBoxLayout(self.lyrics_panel)
         lp.setContentsMargins(12, 10, 12, 10)
         self.lyrics = QTextEdit()
         self.lyrics.setReadOnly(True)
+        self.lyrics.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.lyrics.setPlaceholderText("Lyrics appear here after ID or Lyrics Now")
-        self.lyrics.setFixedHeight(150)
         lp.addWidget(self.lyrics)
         ml.addWidget(self.lyrics_panel)
-        ml.addStretch(1)
+        ml.addStretch(1)                    # keeps player at top when lyrics closed
+
         self.split.addWidget(mid)
 
         # Right
@@ -1679,15 +1681,17 @@ class App(QMainWindow):
     def _toggle_lyrics_panel(self):
         show = self.lyrics_toggle.isChecked()
         self.lyrics_toggle.setText(("▾  Lyrics" if show else "▸  Lyrics"))
-        LYRICS_H = 168
+        self.lyrics_panel.setVisible(show)
         if show:
-            self.lyrics_panel.setVisible(True)
-            self.lyrics_panel.setMinimumHeight(LYRICS_H)
-            self.lyrics_panel.setMaximumHeight(LYRICS_H)
+            # Expand lyrics to take remaining vertical space
+            self.lyrics_panel.setMinimumHeight(220)
+            self.lyrics_panel.setMaximumHeight(16777215)
+            self.lyrics.setMinimumHeight(200)
         else:
-            self.lyrics_panel.setVisible(False)
             self.lyrics_panel.setMinimumHeight(0)
             self.lyrics_panel.setMaximumHeight(0)
+            self.lyrics.setMinimumHeight(0)
+
 
     def lyrics_now(self):
         if not self.song:
