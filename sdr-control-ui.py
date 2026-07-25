@@ -2128,17 +2128,102 @@ class App(QMainWindow):
                 pass
         self._icy_stop = None
 
+    def _ensure_venv_on_path(self) -> bool:
+        """If launched with system python3, still load packages from ~/SDR-Tools/.venv."""
+        venv_py = BASE / ".venv" / "bin" / "python"
+        if not venv_py.exists():
+            return False
+        # Already running inside the project venv?
+        try:
+            if Path(sys.prefix).resolve() == (BASE / ".venv").resolve():
+                return True
+        except Exception:
+            pass
+        # Add venv site-packages for current interpreter version + common variants
+        lib = BASE / ".venv" / "lib"
+        added = False
+        if lib.exists():
+            for site in sorted(lib.glob("python*/site-packages")):
+                sp = str(site.resolve())
+                if sp not in sys.path:
+                    sys.path.insert(0, sp)
+                    added = True
+        return added or (BASE / ".venv").exists()
+
+    def _ensure_stt_installed(self) -> bool:
+        """Create venv if needed and pip-install faster-whisper into it."""
+        venv_dir = BASE / ".venv"
+        venv_py = venv_dir / "bin" / "python"
+        venv_pip = venv_dir / "bin" / "pip"
+        try:
+            if not venv_py.exists():
+                self.sig.cc.emit("Creating app venv for speech-to-text…")
+                self.sig.log.emit("CC: python3 -m venv --system-site-packages .venv")
+                subprocess.run(
+                    [sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)],
+                    check=True,
+                    timeout=120,
+                )
+            self.sig.cc.emit("Installing faster-whisper into app venv (one-time)…")
+            self.sig.log.emit("CC: pip install faster-whisper numpy")
+            subprocess.run(
+                [str(venv_pip), "install", "-U", "pip", "setuptools", "wheel"],
+                check=False,
+                timeout=180,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            r = subprocess.run(
+                [str(venv_pip), "install", "-U", "numpy", "faster-whisper"],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if r.returncode != 0:
+                self.sig.log.emit(f"CC pip failed: {(r.stderr or r.stdout or '')[-400:]}")
+                # fallback vosk
+                r2 = subprocess.run(
+                    [str(venv_pip), "install", "-U", "vosk"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if r2.returncode != 0:
+                    return False
+            self._ensure_venv_on_path()
+            return True
+        except Exception as e:
+            self.sig.log.emit(f"CC install error: {e}")
+            return False
+
     def _get_stt_backend(self):
         """Lazy-load open-source STT: faster-whisper (preferred) or vosk."""
         if getattr(self, "_stt_backend", None):
             return self._stt_backend
 
+        # Prefer packages from project venv even if user launched system python3
+        self._ensure_venv_on_path()
+
+        def try_faster_whisper():
+            from faster_whisper import WhisperModel
+            self.sig.cc.emit("Loading Whisper model (tiny.en, first run may download)…")
+            model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+            return ("faster-whisper", model)
+
+        def try_vosk():
+            from vosk import Model, SetLogLevel
+            SetLogLevel(-1)
+            model_dir = BASE / "models" / "vosk-model-small-en-us-0.15"
+            if not model_dir.exists():
+                self.sig.cc.emit("Downloading Vosk English model (~40MB)…")
+                self._download_vosk_model(model_dir)
+            model = Model(str(model_dir))
+            return ("vosk", model)
+
         # 1) faster-whisper (https://github.com/SYSTRAN/faster-whisper)
         try:
-            from faster_whisper import WhisperModel
-            self.sig.cc.emit("Loading Whisper model (tiny.en, first run downloads)…")
-            model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-            self._stt_backend = ("faster-whisper", model)
+            backend = try_faster_whisper()
+            self._stt_backend = backend
             self.sig.log.emit("CC: using faster-whisper tiny.en")
             return self._stt_backend
         except Exception as e:
@@ -2146,20 +2231,36 @@ class App(QMainWindow):
 
         # 2) vosk (https://github.com/alphacep/vosk-api)
         try:
-            import json as _json
-            from vosk import Model, KaldiRecognizer, SetLogLevel
-            SetLogLevel(-1)
-            model_dir = BASE / "models" / "vosk-model-small-en-us-0.15"
-            if not model_dir.exists():
-                self.sig.cc.emit("Downloading Vosk English model (~40MB)…")
-                self._download_vosk_model(model_dir)
-            model = Model(str(model_dir))
-            self._stt_backend = ("vosk", model)
+            backend = try_vosk()
+            self._stt_backend = backend
             self.sig.log.emit("CC: using vosk small-en-us")
             return self._stt_backend
         except Exception as e:
             self.sig.log.emit(f"CC: vosk unavailable ({e})")
 
+        # 3) Auto-install into ~/SDR-Tools/.venv and retry
+        self.sig.cc.emit("Installing speech engine (one-time, please wait)…")
+        if self._ensure_stt_installed():
+            try:
+                backend = try_faster_whisper()
+                self._stt_backend = backend
+                self.sig.log.emit("CC: using faster-whisper tiny.en (after install)")
+                return self._stt_backend
+            except Exception as e:
+                self.sig.log.emit(f"CC: faster-whisper still unavailable ({e})")
+            try:
+                backend = try_vosk()
+                self._stt_backend = backend
+                self.sig.log.emit("CC: using vosk (after install)")
+                return self._stt_backend
+            except Exception as e:
+                self.sig.log.emit(f"CC: vosk still unavailable ({e})")
+
+        self.sig.cc.emit(
+            "Speech engine missing. Run:\n"
+            f"{BASE}/.venv/bin/pip install faster-whisper numpy\n"
+            f"Then start with: {BASE}/sdr-control"
+        )
         self._stt_backend = None
         return None
 
@@ -2199,12 +2300,13 @@ class App(QMainWindow):
                 backend = self._get_stt_backend()
                 if not backend:
                     self.sig.cc.emit(
-                        "Install STT: pip install --user faster-whisper   "
-                        "(or: pip install --user vosk)"
+                        "Speech engine missing. Run in a terminal:\n"
+                        f"{BASE}/.venv/bin/pip install faster-whisper numpy\n"
+                        f"Then: {BASE}/sdr-control"
                     )
                     self.sig.log.emit(
-                        "CC needs faster-whisper or vosk — run: "
-                        "python3 -m pip install --user faster-whisper"
+                        "CC needs faster-whisper — "
+                        f"{BASE}/.venv/bin/pip install faster-whisper numpy"
                     )
                     return
 
@@ -4255,9 +4357,34 @@ class App(QMainWindow):
         e.accept()
 
 
+def _reexec_with_venv_if_needed() -> None:
+    """If project .venv exists and we are not in it, re-exec so CC/STT imports work."""
+    if "--setup-only" in sys.argv or "-s" in sys.argv:
+        return
+    if os.environ.get("SDR_SKIP_VENV") == "1":
+        return
+    venv_py = BASE / ".venv" / "bin" / "python"
+    if not venv_py.is_file():
+        return
+    try:
+        if Path(sys.executable).resolve() == venv_py.resolve():
+            return
+        # Already a venv that is this project?
+        if Path(sys.prefix).resolve() == (BASE / ".venv").resolve():
+            return
+    except Exception:
+        pass
+    env = os.environ.copy()
+    env["SDR_SKIP_VENV"] = "1"  # prevent loops
+    os.execve(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+
 def main():
     if "--setup-only" in sys.argv or "-s" in sys.argv:
         raise SystemExit(setup_only())
+
+    # Prefer app venv (faster-whisper lives there under PEP 668)
+    _reexec_with_venv_if_needed()
 
     # Seed runtime before GUI so first launch never crashes on missing dirs
     try:
