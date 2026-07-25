@@ -161,6 +161,16 @@ class Sig(QObject):
     lyrics = pyqtSignal(str)
     art = pyqtSignal(str)
     net_list = pyqtSignal(list, str)  # stations, category_or_msg
+    cc = pyqtSignal(str)  # live closed-caption / stream metadata text
+
+# Known logos for built-in Internet stations (cached under art/stations/)
+INTERNET_STATION_ART = {
+    "Radio Mirchi Online": "https://static-media.streema.com/media/cache/cd/e0/cde0d4c2e0f5c8a1e3f3e3e3e3e3e3e3.jpg",
+    "BBC World Service": "https://rmp.files.bbci.co.uk/playspace/img/apple-touch-icon.96d5401f35.png",
+    "NPR News": "https://media.npr.org/images/podcasts/primary/npr_generic_image_300.jpg",
+    "Lofi Hip Hop": "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=400&h=400&fit=crop",
+    "SomaFM Groove Salad": "https://somafm.com/img3/groovesalad-400.jpg",
+}
 
 
 class Toast(QLabel):
@@ -406,15 +416,20 @@ class App(QMainWindow):
         self.sig.lyrics.connect(self.on_lyrics)
         self.sig.art.connect(self.show_art)
         self.sig.net_list.connect(self._on_net_list)
+        self.sig.cc.connect(self._on_cc_text)
 
         self.stations = self._clean_stations(load_json(STATIONS_F, DEFAULT_STATIONS))
-        self.cfg = load_json(CONFIG, {"gain": 35, "song_id": True})
+        self.cfg = load_json(CONFIG, {"gain": 35, "song_id": True, "cc": False})
         self.history = load_json(HIST_F, [])
         self.favs = load_json(FAV_F, [])
         self.ac_key = AC_KEY.read_text().strip() if AC_KEY.exists() else ""
         self.gn_key = GN_KEY.read_text().strip() if GN_KEY.exists() else ""
         SNIP.mkdir(parents=True, exist_ok=True)
         ART.mkdir(parents=True, exist_ok=True)
+        (ART / "stations").mkdir(parents=True, exist_ok=True)
+        self._icy_stop = None
+        self._cc_on = bool(self.cfg.get("cc", False))
+        self._stream_favicon = None
 
         # Always kill leftover audio on every launch
         try:
@@ -436,6 +451,8 @@ class App(QMainWindow):
             self._sync_auto_id_tooltip()
         except Exception:
             pass
+        # Prefetch logos for built-in + local Internet stations
+        QTimer.singleShot(600, self._prefetch_internet_arts)
 
     def _bind_shortcuts(self):
         """Global keyboard shortcuts for reload (Ctrl+R / F5)."""
@@ -832,11 +849,29 @@ class App(QMainWindow):
         self.sp_id.setVisible(False)
         self.sp_yt = QPushButton()
         self.sp_yt.setVisible(False)
+        # Closed captions / live stream text (ICY metadata + song ID)
+        self.btn_cc = QPushButton("CC")
+        self.btn_cc.setObjectName("ccBtn")
+        self.btn_cc.setFixedSize(42, 42)
+        self.btn_cc.setCheckable(True)
+        self.btn_cc.setChecked(bool(self.cfg.get("cc", False)))
+        self.btn_cc.setToolTip("Closed captions — live stream text / subtitles")
+        self.btn_cc.setCursor(Qt.PointingHandCursor)
+        self.btn_cc.clicked.connect(self._toggle_cc)
         rowsp.addWidget(self.sp_lrc)
         rowsp.addWidget(self.sp_play)
         rowsp.addWidget(self.sp_fav)
+        rowsp.addWidget(self.btn_cc)
         rowsp.addStretch()
         sp.addLayout(rowsp)
+        # Live CC subtitle strip under controls
+        self.cc_bar = QLabel("")
+        self.cc_bar.setObjectName("cc")
+        self.cc_bar.setAlignment(Qt.AlignCenter)
+        self.cc_bar.setWordWrap(True)
+        self.cc_bar.setMinimumHeight(36)
+        self.cc_bar.setVisible(bool(self.cfg.get("cc", False)))
+        sp.addWidget(self.cc_bar)
         sp.addStretch(1)
         self.spotify_panel.setVisible(True)
         ml.addWidget(self.spotify_panel, 1)
@@ -1194,12 +1229,17 @@ class App(QMainWindow):
                 QLabel#title { font-size:22px; font-weight:700; }
                 QLabel#sub { color:#8e8e93; font-size:12px; }
                 QLabel#song { color:#30d158; font-size:13px; }
+                QLabel#cc { color:#f5f5f7; font-size:14px; font-weight:600;
+                    background:rgba(48,209,88,0.12); border-radius:10px; padding:8px 12px; }
                 QLabel#h { background: transparent; }
                 QLabel#toast { background:#f5f5f7; color:#1d1d1f; border-radius:14px; padding:12px 16px; }
                 QPushButton#play { background:#30d158; color:#000; border:none; border-radius:22px; }
                 QPushButton#icon { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:21px; }
                 QPushButton#icon:checked { background:#30d158; color:#000; }
                 QPushButton#icon:disabled { color:#636366; }
+                QPushButton#ccBtn { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:21px;
+                    font-weight:800; font-size:11px; }
+                QPushButton#ccBtn:checked { background:#30d158; color:#000; }
                 QPushButton#pill { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:14px; padding:10px; }
                 QPushButton#navBtn {
                     background: transparent;
@@ -1241,12 +1281,17 @@ class App(QMainWindow):
                 QLabel#title { font-size:22px; font-weight:700; }
                 QLabel#sub { color:#6e6e73; font-size:12px; }
                 QLabel#song { color:#248a3d; font-size:13px; }
+                QLabel#cc { color:#1d1d1f; font-size:14px; font-weight:600;
+                    background:rgba(48,209,88,0.18); border-radius:10px; padding:8px 12px; }
                 QLabel#h { background: transparent; }
                 QLabel#toast { background:#1d1d1f; color:#f5f5f7; border-radius:14px; padding:12px 16px; }
                 QPushButton#play { background:#30d158; color:#fff; border:none; border-radius:22px; }
                 QPushButton#icon { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:21px; }
                 QPushButton#icon:checked { background:#30d158; color:#fff; }
                 QPushButton#icon:disabled { color:#aeaeb2; }
+                QPushButton#ccBtn { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:21px;
+                    font-weight:800; font-size:11px; }
+                QPushButton#ccBtn:checked { background:#30d158; color:#fff; }
                 QPushButton#pill { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:14px; padding:10px; }
                 QPushButton#navBtn {
                     background: transparent;
@@ -1694,7 +1739,11 @@ class App(QMainWindow):
         # Internet stream
         if s.get("url"):
             self._apply_stream_mode(True)
-            self.play_stream(s.get("url"), s.get("name", "Stream"))
+            self.play_stream(
+                s.get("url"),
+                s.get("name", "Stream"),
+                favicon=s.get("favicon") or s.get("logo") or s.get("favicon_url"),
+            )
             return
         # RF station — restore SDR player/tuner if we were in stream UI
         if getattr(self, "left_mode", None) is not None and self.left_mode.currentIndex() == 0:
@@ -1709,12 +1758,22 @@ class App(QMainWindow):
         self.play(freq, s.get("mode") or mode_for_freq(freq), s.get("name", ""))
 
 
+    def _station_art_slug(self, name: str) -> str:
+        s = re.sub(r"[^\w\s-]", "", (name or "").strip(), flags=re.UNICODE)
+        s = re.sub(r"\s+", "_", s).strip("_")
+        return s[:80] or "station"
+
     def _station_art_path(self, name):
         """Return path to station default art if it exists."""
         if not name:
             return None
         base = ART / "stations"
+        slug = self._station_art_slug(name)
         candidates = [
+            base / f"{slug}.png",
+            base / f"{slug}.jpg",
+            base / f"{slug}.jpeg",
+            base / f"{slug}.webp",
             base / f"{name.replace(' ', '_')}.png",
             base / f"{name.replace(' ', '_')}.jpg",
             base / "default.png",
@@ -1724,13 +1783,213 @@ class App(QMainWindow):
                 return str(p)
         return None
 
-    def _show_station_art(self, name=""):
-        path = self._station_art_path(name)
+    def _download_image(self, url: str, dest: Path, timeout=12) -> bool:
+        if not url or not str(url).startswith("http"):
+            return False
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 SDR-Radio/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            if not data or len(data) < 200:
+                return False
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            return dest.exists() and dest.stat().st_size > 200
+        except Exception:
+            return False
+
+    def _ensure_station_art(self, name: str, favicon: str | None = None) -> str | None:
+        """Return local art path, downloading from favicon / known logos if needed."""
+        existing = self._station_art_path(name)
+        if existing and Path(existing).name != "default.png":
+            return existing
+        # Reuse close local matches (e.g. Radio Mirchi for Mirchi Online)
+        base = ART / "stations"
+        for alt in (
+            re.sub(r"\s+Online$", "", name or "", flags=re.I).strip(),
+            re.sub(r"\s+Radio$", "", name or "", flags=re.I).strip(),
+        ):
+            if alt and alt != name:
+                p = self._station_art_path(alt)
+                if p and Path(p).name != "default.png":
+                    return p
+        slug = self._station_art_slug(name)
+        dest = ART / "stations" / f"{slug}.png"
+        urls = []
+        if favicon:
+            urls.append(favicon)
+        known = INTERNET_STATION_ART.get(name) or INTERNET_STATION_ART.get(name.strip())
+        if known:
+            urls.append(known)
+        for u in urls:
+            if self._download_image(u, dest):
+                return str(dest)
+        # Last resort: iTunes radio/logo search
+        try:
+            q = urllib.parse.quote(f"{name} radio")
+            req = urllib.request.Request(
+                f"https://itunes.apple.com/search?term={q}&entity=album&limit=1",
+                headers={"User-Agent": "SDR-Radio/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get("results"):
+                u = data["results"][0].get("artworkUrl100") or ""
+                if u:
+                    u = u.replace("100x100bb", "600x600bb")
+                    if self._download_image(u, dest):
+                        return str(dest)
+        except Exception:
+            pass
+        return existing
+
+    def _show_station_art(self, name="", favicon=None):
+        path = self._ensure_station_art(name, favicon=favicon)
         if path:
             self.show_art(path)
         else:
-            self.art.setPixmap(QPixmap())
-            self.art.setText("♪")
+            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+            if art is not None:
+                art.setPixmap(QPixmap())
+                art.setText("♪")
+
+    def _prefetch_internet_arts(self):
+        """Background: cache album art for all local Internet stations."""
+        def work():
+            names_urls = []
+            for cat, items in (self.stations or {}).items():
+                for s in items or []:
+                    if isinstance(s, dict) and s.get("url") and s.get("name"):
+                        names_urls.append((s["name"], s.get("favicon") or INTERNET_STATION_ART.get(s["name"])))
+            for name, fav in INTERNET_STATION_ART.items():
+                names_urls.append((name, fav))
+            seen = set()
+            ok = 0
+            for name, fav in names_urls:
+                key = self._station_art_slug(name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                path = self._ensure_station_art(name, favicon=fav)
+                if path and Path(path).name != "default.png":
+                    ok += 1
+            self.sig.log.emit(f"Station art: {ok}/{len(seen)} internet logos cached")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _toggle_cc(self):
+        on = bool(self.btn_cc.isChecked()) if hasattr(self, "btn_cc") else False
+        self._cc_on = on
+        self.cfg["cc"] = on
+        try:
+            save_json(CONFIG, self.cfg)
+        except Exception:
+            pass
+        if hasattr(self, "cc_bar"):
+            self.cc_bar.setVisible(on)
+            if on and not (self.cc_bar.text() or "").strip():
+                self.cc_bar.setText("Captions on — waiting for stream text…")
+            if not on:
+                self.cc_bar.setText("")
+        if on and self.playing and getattr(self, "_stream_url", None):
+            self._start_icy(self._stream_url)
+        elif not on:
+            self._stop_icy()
+        try:
+            self._save_prefs()
+        except Exception:
+            pass
+
+    def _on_cc_text(self, text: str):
+        if not getattr(self, "_cc_on", False):
+            return
+        if hasattr(self, "cc_bar"):
+            self.cc_bar.setVisible(True)
+            self.cc_bar.setText(text or "")
+        # Also mirror into song line when it's live stream metadata
+        t = (text or "").strip()
+        if t and hasattr(self, "sp_song"):
+            self.sp_song.setText(t)
+            if hasattr(self, "song_l"):
+                self.song_l.setText(t)
+
+    def _set_cc_text(self, text: str):
+        try:
+            self.sig.cc.emit(text or "")
+        except Exception:
+            self._on_cc_text(text or "")
+
+    def _stop_icy(self):
+        ev = getattr(self, "_icy_stop", None)
+        if ev is not None:
+            try:
+                ev.set()
+            except Exception:
+                pass
+        self._icy_stop = None
+
+    def _start_icy(self, url: str):
+        """Read ICY stream metadata (live titles / 'subtitles') in background."""
+        self._stop_icy()
+        if not url or not getattr(self, "_cc_on", False):
+            return
+        stop = threading.Event()
+        self._icy_stop = stop
+
+        def work():
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "Icy-MetaData": "1",
+                        "User-Agent": "SDR-Radio/1.0",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    meta_int = 0
+                    for k, v in resp.headers.items():
+                        if k.lower() == "icy-metaint":
+                            try:
+                                meta_int = int(v)
+                            except Exception:
+                                meta_int = 0
+                            break
+                    if meta_int <= 0:
+                        self.sig.cc.emit("No live captions on this stream")
+                        return
+                    last = ""
+                    while not stop.is_set() and getattr(self, "playing", False):
+                        chunk = resp.read(meta_int)
+                        if not chunk or len(chunk) < meta_int:
+                            break
+                        b = resp.read(1)
+                        if not b:
+                            break
+                        length = b[0] * 16
+                        if length <= 0:
+                            continue
+                        meta = resp.read(length)
+                        if not meta:
+                            continue
+                        try:
+                            text = meta.decode("utf-8", "ignore")
+                        except Exception:
+                            text = meta.decode("latin-1", "ignore")
+                        m = re.search(r"StreamTitle='([^']*)'", text)
+                        if not m:
+                            m = re.search(r'StreamTitle="([^"]*)"', text)
+                        title = (m.group(1).strip() if m else "").strip()
+                        if title and title != last:
+                            last = title
+                            self.sig.cc.emit(title)
+            except Exception as e:
+                if not stop.is_set():
+                    self.sig.cc.emit(f"CC: {e}" if str(e) else "CC unavailable")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def clear_song(self):
         self.song = None
@@ -1785,6 +2044,11 @@ class App(QMainWindow):
             self.clear_song()
 
     def stop(self):
+        try:
+            self._stop_icy()
+        except Exception:
+            pass
+        self._stream_url = None
         try:
             self.stop_id()
         except Exception:
@@ -1889,7 +2153,7 @@ class App(QMainWindow):
 
 
 
-    def play_stream(self, url, name="Internet Radio"):
+    def play_stream(self, url, name="Internet Radio", favicon=None):
         """Play an internet radio URL via ffplay (fallback mpv)."""
         try:
             self.stop()
@@ -1901,6 +2165,20 @@ class App(QMainWindow):
         self.set_playing(True, name, detail)
         self.log(f"▶ {name} · {url}")
         self._current_station = name
+        self._stream_url = url
+        self._stream_favicon = favicon or INTERNET_STATION_ART.get(name)
+
+        # Station logo / album art
+        def art_work():
+            path = self._ensure_station_art(name, favicon=self._stream_favicon)
+            if path:
+                self.sig.art.emit(path)
+        threading.Thread(target=art_work, daemon=True).start()
+        # Show cached immediately if present
+        try:
+            self._show_station_art(name, favicon=self._stream_favicon)
+        except Exception:
+            pass
 
         cmd = None
         # Prefer ffplay (ffmpeg), quiet, no window
@@ -1939,6 +2217,9 @@ class App(QMainWindow):
             return
 
         self.log("stream: started OK")
+        if getattr(self, "_cc_on", False):
+            self._set_cc_text(f"♪ {name}")
+            self._start_icy(url)
         if bool(self.cfg.get("song_id", True)):
             self.start_id()
 
@@ -1978,6 +2259,14 @@ class App(QMainWindow):
         detail = f"{freq:.3f} MHz · {mode.upper()} · gain {gain}"
         self.set_playing(True, name or f"{freq:.1f} MHz", detail)
         self.log(f"▶ {name} · {detail}")
+        self._current_station = name or f"{freq:.1f} MHz"
+        self._stream_url = None
+        try:
+            self._show_station_art(name)
+        except Exception:
+            pass
+        if getattr(self, "_cc_on", False):
+            self._set_cc_text(f"♪ {name or f'{freq:.1f} MHz'}")
 
         if mode == "wbfm":
             cmd = (f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast "
@@ -2230,6 +2519,8 @@ class App(QMainWindow):
             self.song_l2.setText(text)
         if hasattr(self, "sp_song"):
             self.sp_song.setText(text)
+        if getattr(self, "_cc_on", False):
+            self._set_cc_text(text)
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
         liked = self._is_fav(song)
@@ -3115,9 +3406,17 @@ class App(QMainWindow):
             country = s.get("countrycode") or s.get("country") or ""
             text = f"{name}  ·  {country}" if country else name
             it = QListWidgetItem(text)
+            favicon = (s.get("favicon") or "").strip() or None
             it.setToolTip(f"{name}\n{url}")
-            it.setData(Qt.UserRole, {"name": name, "url": url, "mode": "net"})
+            it.setData(Qt.UserRole, {
+                "name": name, "url": url, "mode": "net", "favicon": favicon,
+            })
             self.stations_list.addItem(it)
+            # Cache logo in background when list loads
+            if favicon and name:
+                threading.Thread(
+                    target=self._ensure_station_art, args=(name, favicon), daemon=True
+                ).start()
         self.statusBar().showMessage(f"Internet: {self.stations_list.count()} – {label}")
 
     def _load_internet_cat(self, cat):
@@ -3340,6 +3639,14 @@ class App(QMainWindow):
             self.btn_toggle_tuner.blockSignals(False)
             if not getattr(self, "_stream_mode", False):
                 self._set_tuner_visible(self._tuner_open)
+        # Closed captions
+        self._cc_on = bool(p.get("cc", False))
+        if hasattr(self, "btn_cc"):
+            self.btn_cc.blockSignals(True)
+            self.btn_cc.setChecked(self._cc_on)
+            self.btn_cc.blockSignals(False)
+        if hasattr(self, "cc_bar"):
+            self.cc_bar.setVisible(self._cc_on)
         # Right sidebar visible/expanded
         self._right_expanded = bool(p.get("right_expanded", True))
         self._right_visible = bool(p.get("right_visible", True))
@@ -3349,6 +3656,7 @@ class App(QMainWindow):
         try:
             self.cfg["dark"] = bool(getattr(self, "dark", False))
             self.cfg["song_id"] = bool(self.cfg.get("song_id", True))
+            self.cfg["cc"] = bool(getattr(self, "_cc_on", False))
             self.cfg["lyrics_open"] = bool(
                 getattr(self, "lyrics_toggle", None) and self.lyrics_toggle.isChecked()
             )
