@@ -153,7 +153,7 @@ class Toast(QLabel):
         self.adjustSize()
         if self.parent():
             r = self.parent().rect()
-            self.move(r.width() - self.width() - 20, r.height() - self.height() - 20)
+            self.move(20, r.height() - self.height() - 20)
         self.show()
         self.raise_()
         self._t.start(ms)
@@ -685,6 +685,8 @@ class App(QMainWindow):
         self.btn_collapse_right.clicked.connect(self._toggle_right_sidebar)
         top.addWidget(self.btn_collapse_right)
 
+        top.addStretch()
+
         self.btn_auto_side = QPushButton()
         self.btn_auto_side.setObjectName("icon")
         self.btn_auto_side.setFixedSize(34, 34)
@@ -694,7 +696,15 @@ class App(QMainWindow):
         self.btn_auto_side.setToolTip("Auto Song ID")
         self.btn_auto_side.clicked.connect(self._toggle_auto_side)
         top.addWidget(self.btn_auto_side)
-        top.addStretch()
+
+        self.btn_theme_side = QPushButton()
+        self.btn_theme_side.setObjectName("icon")
+        self.btn_theme_side.setFixedSize(34, 34)
+        self.btn_theme_side.setIcon(load_icon("moon"))
+        self.btn_theme_side.setIconSize(QSize(16, 16))
+        self.btn_theme_side.setToolTip("Light / Dark")
+        self.btn_theme_side.clicked.connect(self.toggle_theme)
+        top.addWidget(self.btn_theme_side)
         rl.addLayout(top)
         rl.addSpacing(8)
 
@@ -704,7 +714,6 @@ class App(QMainWindow):
             ("Library", "bookmark", 0),
             ("Tools",   "settings", 1),
             ("Log",     "history",  2),
-            ("Theme",   "moon",     3),
         ]
         for label, icon_name, idx in nav_items:
             btn = QPushButton(f"  {label}")
@@ -714,10 +723,7 @@ class App(QMainWindow):
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFixedHeight(38)
-            if idx == 3:   # Theme is an action, not a page
-                btn.clicked.connect(self.toggle_theme)
-            else:
-                btn.clicked.connect(lambda checked, i=idx: self._switch_right_tab(i))
+            btn.clicked.connect(lambda checked, i=idx: self._switch_right_tab(i))
             rl.addWidget(btn)
             self.nav_btns.append(btn)
 
@@ -1278,20 +1284,51 @@ class App(QMainWindow):
         else:
             self.play(self.freq.value(), self.mode.currentText(), f"{self.freq.value():.1f} MHz")
 
-    def play(self, freq, mode, name="", quick=False):
+
+    def _soft_reset_dongle(self):
+        """Release a stuck RTL-SDR without physical unplug."""
+        self.log("Soft-resetting dongle…")
         try:
-            if self.rtl and self.rtl.poll() is None:
-                self.rtl.terminate()
+            subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.2)
+            # Re-authorize the USB device
+            for d in Path("/sys/bus/usb/devices").glob("*/idVendor"):
                 try:
-                    self.rtl.wait(timeout=0.3)
+                    if d.read_text().strip() == "0bda":
+                        dev = d.parent
+                        auth = dev / "authorized"
+                        if auth.exists():
+                            auth.write_text("0")
+                            time.sleep(0.4)
+                            auth.write_text("1")
+                            self.log(f"Reset {dev.name}")
+                            time.sleep(0.6)
+                            return True
                 except Exception:
-                    self.rtl.kill()
+                    continue
         except Exception as e:
-            self.log(f"play: old process: {e}")
+            self.log(f"soft reset: {e}")
+        return False
+
+    def play(self, freq, mode, name="", quick=False):
+        """Start or retune. Auto soft-resets the dongle if it is locked."""
+        # Stop previous cleanly
+        if self.rtl is not None:
+            try:
+                if self.rtl.poll() is None:
+                    self.rtl.terminate()
+                    try:
+                        self.rtl.wait(timeout=0.5)
+                    except Exception:
+                        self.rtl.kill()
+            except Exception:
+                pass
+            self.rtl = None
 
         subprocess.run(["killall", "-9", "rtl_fm", "play"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.08 if quick else 0.15)
+        time.sleep(0.2 if quick else 0.3)
 
         self.stop_id()
         self.clear_song()
@@ -1321,29 +1358,36 @@ class App(QMainWindow):
             cmd = (f"rtl_fm -f {hz} -M fm -g {gain} -s 22050 -r 22050 -l 0 - | "
                    f"play -r 22050 -t raw -e signed -b 16 -c 1 -q -")
 
-        self.log(f"cmd: {cmd}")
+        # Try up to 3 times, with a soft reset in the middle
+        for attempt in range(3):
+            try:
+                self.rtl = subprocess.Popen(cmd, shell=True)
+            except Exception as e:
+                self.log(f"play: Popen failed: {e}")
+                self.set_playing(False)
+                return
 
-        try:
-            self.rtl = subprocess.Popen(cmd, shell=True)
-        except Exception as e:
-            self.log(f"play: Popen failed: {e}")
-            self.set_playing(False)
-            return
+            time.sleep(0.4)
+            if self.rtl.poll() is None:
+                self.log("play: started OK")
+                self._highlight_station_for_freq(freq)
+                if bool(self.cfg.get("song_id", True)):
+                    self.start_id()
+                return
 
-        time.sleep(0.3)
-        if self.rtl.poll() is not None:
-            self.log("play: process exited immediately — check dongle with: lsusb | grep -i rtl")
-            self.set_playing(False)
-            self.rtl = None
-            return
+            self.log(f"play: attempt {attempt+1} failed (device busy)")
+            subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if attempt == 0:
+                # After first failure, soft-reset the dongle
+                self._soft_reset_dongle()
+            else:
+                time.sleep(0.5)
 
-        self.log("play: started OK")
-        self._highlight_station_for_freq(freq)
+        self.log("play: still locked — please unplug/replug once")
+        self.set_playing(False)
+        self.rtl = None
 
-        if bool(self.cfg.get("song_id", True)):
-            self.start_id()
-        else:
-            threading.Thread(target=lambda: (time.sleep(8), self.playing and self.id_now()), daemon=True).start()
 
     def _toggle_auto_side(self):
         on = not bool(self.cfg.get("song_id", True))
@@ -1982,12 +2026,8 @@ class App(QMainWindow):
 
     def _switch_right_tab(self, idx):
         for i, b in enumerate(self.nav_btns):
-            # Theme button (index 3) is never "page checked"
-            if i == 3:
-                continue
             b.setChecked(i == idx)
-        if idx <= 2:
-            self.right_stack.setCurrentIndex(idx)
+        self.right_stack.setCurrentIndex(idx)
 
     def _toggle_right_sidebar(self):
         self._right_expanded = not getattr(self, "_right_expanded", True)
