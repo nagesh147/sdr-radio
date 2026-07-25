@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SDR Radio — Apple/Spotify-inspired responsive UI."""
+"""SDR Radio — clean modern UI with Lucide icons."""
 from __future__ import annotations
 
 import sys, os, subprocess, threading, time, json, asyncio, re
@@ -9,6 +9,7 @@ from pathlib import Path
 from difflib import SequenceMatcher
 
 BASE = Path.home() / "SDR-Tools"
+ICONS = BASE / "icons"
 LOCK = Path("/tmp/sdr-control.lock")
 CONFIG = BASE / "radio_config.json"
 STATIONS_F = BASE / "stations.json"
@@ -20,30 +21,36 @@ SNIP = BASE / "snippets"
 ART = BASE / "art"
 
 def _alive(pid):
-    try: os.kill(pid, 0); return True
-    except OSError: return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 if LOCK.exists():
     try:
         o = int(LOCK.read_text().strip())
-        if _alive(o): sys.exit(0)
+        if _alive(o):
+            sys.exit(0)
         LOCK.unlink(missing_ok=True)
     except Exception:
         LOCK.unlink(missing_ok=True)
 LOCK.write_text(str(os.getpid()))
 
 from PyQt5.QtWidgets import (
-    QMessageBox,
-    QInputDialog,
-    QMenu,
-    QAbstractItemView,
+    QMessageBox, QInputDialog, QMenu, QAbstractItemView,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QFrame, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
-    QDoubleSpinBox, QTabWidget, QSplitter, QSizePolicy, QAbstractSpinBox,
-    QGraphicsDropShadowEffect, QToolTip,
+    QDoubleSpinBox, QTabWidget, QSplitter, QSizePolicy, QAbstractSpinBox, QToolTip,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QUrl, QSize, QPoint, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QUrl, QSize
+from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor, QIcon
+
+def load_icon(name: str) -> QIcon:
+    p = ICONS / f"{name}.png"
+    if p.exists():
+        return QIcon(str(p))
+    return QIcon()
 
 DEFAULT_STATIONS = {
     "India FM": [
@@ -79,12 +86,14 @@ BANDS = [
 
 def mode_for_freq(f):
     for _, a, b, m in BANDS:
-        if a <= f <= b: return m
+        if a <= f <= b:
+            return m
     return "wbfm" if 88 <= f <= 108 else ("am" if f < 30 else "fm")
 
 def band_for_freq(f):
     for n, a, b, _ in BANDS:
-        if a <= f <= b: return n
+        if a <= f <= b:
+            return n
     return "All Bands"
 
 def _norm(s):
@@ -93,18 +102,23 @@ def _norm(s):
     return re.sub(r"\s+", " ", s).strip()
 
 def song_match(a, b, th=0.82):
-    if not a or not b: return False
+    if not a or not b:
+        return False
     aa, at = _norm(a.get("artist")), _norm(a.get("title"))
     ba, bt = _norm(b.get("artist")), _norm(b.get("title"))
-    if not at or not bt: return False
-    if at == bt and (not aa or not ba or aa == ba or aa in ba or ba in aa): return True
+    if not at or not bt:
+        return False
+    if at == bt and (not aa or not ba or aa == ba or aa in ba or ba in aa):
+        return True
     return SequenceMatcher(None, at, bt).ratio() >= th and (
         SequenceMatcher(None, aa, ba).ratio() if aa and ba else 0.9) >= 0.55
 
 def load_json(path, default):
     if path.exists():
-        try: return json.loads(path.read_text())
-        except Exception: pass
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(default, indent=2))
     return json.loads(json.dumps(default))
@@ -119,7 +133,7 @@ class Sig(QObject):
     result = pyqtSignal(dict)
     status = pyqtSignal(str)
     lyrics = pyqtSignal(str)
-    art = pyqtSignal(str)  # path
+    art = pyqtSignal(str)
 
 
 class Toast(QLabel):
@@ -128,17 +142,21 @@ class Toast(QLabel):
         self.setObjectName("toast")
         self.setWordWrap(True)
         self.hide()
-        self._t = QTimer(self); self._t.setSingleShot(True); self._t.timeout.connect(self.hide)
+        self._t = QTimer(self)
+        self._t.setSingleShot(True)
+        self._t.timeout.connect(self.hide)
 
     def show_msg(self, text, ms=3000):
         self.setText(text)
         self.adjustSize()
-        self.setFixedWidth(min(320, max(180, (self.parent().width() if self.parent() else 360)//3)))
+        self.setFixedWidth(min(320, max(180, (self.parent().width() if self.parent() else 360) // 3)))
         self.adjustSize()
         if self.parent():
             r = self.parent().rect()
             self.move(r.width() - self.width() - 20, r.height() - self.height() - 20)
-        self.show(); self.raise_(); self._t.start(ms)
+        self.show()
+        self.raise_()
+        self._t.start(ms)
 
 
 class FreqScale(QWidget):
@@ -270,25 +288,25 @@ class FreqScale(QWidget):
 
 
 class HoverIcon(QPushButton):
-    """Fixed-size header icon. Fades in/out — never show()/hide() (avoids layout jump)."""
-    def __init__(self, text, tip, parent=None):
-        super().__init__(text, parent)
+    def __init__(self, icon_name, tip, parent=None):
+        super().__init__(parent)
         self.setObjectName("icon")
         self.setFixedSize(28, 28)
+        self.setIcon(load_icon(icon_name))
+        self.setIconSize(QSize(15, 15))
         self.setToolTip(tip)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
         from PyQt5.QtWidgets import QGraphicsOpacityEffect
         self._fx = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._fx)
-        self._fx.setOpacity(0.0)  # invisible but still occupies space
+        self._fx.setOpacity(0.0)
 
     def fade(self, on: bool):
         self._fx.setOpacity(1.0 if on else 0.0)
 
 
 class Collapse(QWidget):
-    """When open, expands to fill remaining space; when closed, header only."""
     def __init__(self, title, start_open=True):
         super().__init__()
         self._open = start_open
@@ -326,7 +344,6 @@ class Collapse(QWidget):
     def toggle(self):
         self._open = not self._open
         self._apply()
-        # notify parent to reflow
         p = self.parentWidget()
         if p and p.layout():
             p.layout().activate()
@@ -377,29 +394,33 @@ class App(QMainWindow):
         self._ui()
         self._style()
         self.log("Ready")
-        self.log("Bands: " + ", ".join(b[0] for b in BANDS))
-        if self.cfg.get("song_id"):
-            if hasattr(self, 'btn_auto_side'):
-                self.btn_auto_side.setChecked(True)
+        if self.cfg.get("song_id") and hasattr(self, "btn_auto_side"):
+            self.btn_auto_side.setChecked(True)
 
     def _clean_stations(self, data):
         out = {}
         for cat, items in (data or {}).items():
             clean = []
             for s in items or []:
-                if not isinstance(s, dict): continue
+                if not isinstance(s, dict):
+                    continue
                 name = str(s.get("name", "")).strip()
-                try: freq = float(s.get("freq", 0))
-                except Exception: continue
-                if not name or freq <= 0 or name.replace(".", "").isdigit(): continue
+                try:
+                    freq = float(s.get("freq", 0))
+                except Exception:
+                    continue
+                if not name or freq <= 0 or name.replace(".", "").isdigit():
+                    continue
                 clean.append({"name": name, "freq": freq, "mode": s.get("mode") or mode_for_freq(freq)})
-            if clean: out[cat] = clean
+            if clean:
+                out[cat] = clean
         return out or DEFAULT_STATIONS
 
     def _ui(self):
         self.setMinimumSize(1020, 660)
         self.resize(1120, 720)
-        c = QWidget(); self.setCentralWidget(c)
+        c = QWidget()
+        self.setCentralWidget(c)
         root = QVBoxLayout(c)
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(0)
@@ -410,8 +431,9 @@ class App(QMainWindow):
         self.split.setChildrenCollapsible(True)
         root.addWidget(self.split, 1)
 
-        # --- Left: stations (resizable) ---
-        left = QFrame(); left.setObjectName("card")
+        # Left
+        left = QFrame()
+        left.setObjectName("card")
         left.setMinimumWidth(280)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(12, 12, 12, 12)
@@ -419,10 +441,11 @@ class App(QMainWindow):
         hdr = QHBoxLayout()
         hdr.setContentsMargins(0, 0, 0, 0)
         hdr.setSpacing(4)
-        hl = QLabel("Stations"); hl.setObjectName("h")
+        hl = QLabel("Stations")
+        hl.setObjectName("h")
         hdr.addWidget(hl)
         hdr.addStretch()
-        self.btn_hide_left = HoverIcon("◂", "Hide stations")
+        self.btn_hide_left = HoverIcon("panel-left", "Hide stations")
         self.btn_hide_left.clicked.connect(lambda: self.toggle_left(False))
         hdr.addWidget(self.btn_hide_left)
         left.installEventFilter(self)
@@ -433,7 +456,8 @@ class App(QMainWindow):
         self.cats.setFixedWidth(110)
         self.cats.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cats.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        for k in self.stations: self.cats.addItem(k)
+        for k in self.stations:
+            self.cats.addItem(k)
         self.cats.currentTextChanged.connect(self.load_cat)
         row.addWidget(self.cats)
         self.stations_list = QListWidget()
@@ -449,36 +473,39 @@ class App(QMainWindow):
         self.stations_list.model().rowsMoved.connect(self._stations_reordered)
         self.stations_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.stations_list.customContextMenuRequested.connect(self.stations_menu)
-        self.stations_list.itemEntered.connect(lambda it: QToolTip.showText(
-            QCursor.pos(), it.toolTip() or it.text(), self.stations_list))
         row.addWidget(self.stations_list, 1)
         ll.addLayout(row, 1)
         self.split.addWidget(left)
 
-        # --- Center ---
+        # Center
         mid = QWidget()
         ml = QVBoxLayout(mid)
         ml.setContentsMargins(6, 0, 6, 0)
         ml.setSpacing(8)
         edge = QHBoxLayout()
-        self.btn_show_left = QPushButton("☰")
+        self.btn_show_left = QPushButton()
         self.btn_show_left.setObjectName("icon")
-        self.btn_show_left.setFixedSize(28, 28)
+        self.btn_show_left.setFixedSize(32, 32)
+        self.btn_show_left.setIcon(load_icon("menu"))
+        self.btn_show_left.setIconSize(QSize(18, 18))
         self.btn_show_left.setToolTip("Show stations")
         self.btn_show_left.setVisible(False)
         self.btn_show_left.clicked.connect(lambda: self.toggle_left(True))
         edge.addWidget(self.btn_show_left)
         edge.addStretch()
-        self.btn_show_right = QPushButton("☰")
+        self.btn_show_right = QPushButton()
         self.btn_show_right.setObjectName("icon")
-        self.btn_show_right.setFixedSize(28, 28)
+        self.btn_show_right.setFixedSize(32, 32)
+        self.btn_show_right.setIcon(load_icon("menu"))
+        self.btn_show_right.setIconSize(QSize(18, 18))
         self.btn_show_right.setToolTip("Show side panel")
         self.btn_show_right.setVisible(False)
         self.btn_show_right.clicked.connect(lambda: self.toggle_right(True))
         edge.addWidget(self.btn_show_right)
         ml.addLayout(edge)
 
-        hero = QFrame(); hero.setObjectName("card")
+        hero = QFrame()
+        hero.setObjectName("card")
         hl = QHBoxLayout(hero)
         hl.setContentsMargins(16, 16, 16, 16)
         hl.setSpacing(16)
@@ -490,45 +517,65 @@ class App(QMainWindow):
         self.art.setObjectName("art")
         hl.addWidget(self.art)
 
-        info = QVBoxLayout(); info.setSpacing(4)
-        self.title = QLabel("Not playing"); self.title.setObjectName("title")
-        self.sub = QLabel("Pick a station"); self.sub.setObjectName("sub")
-        self.song_l = QLabel(""); self.song_l.setObjectName("song"); self.song_l.setWordWrap(True)
-        info.addWidget(self.title); info.addWidget(self.sub); info.addWidget(self.song_l)
+        info = QVBoxLayout()
+        info.setSpacing(4)
+        self.title = QLabel("Not playing")
+        self.title.setObjectName("title")
+        self.sub = QLabel("Pick a station")
+        self.sub.setObjectName("sub")
+        self.song_l = QLabel("")
+        self.song_l.setObjectName("song")
+        self.song_l.setWordWrap(True)
+        info.addWidget(self.title)
+        info.addWidget(self.sub)
+        info.addWidget(self.song_l)
         info.addStretch()
-        ctr = QHBoxLayout(); ctr.setSpacing(10)
-        self.btn_play = QPushButton("▶")
+
+        ctr = QHBoxLayout()
+        ctr.setSpacing(10)
+
+        self.btn_play = QPushButton()
         self.btn_play.setObjectName("play")
         self.btn_play.setFixedSize(48, 48)
+        self.btn_play.setIcon(load_icon("play"))
+        self.btn_play.setIconSize(QSize(22, 22))
         self.btn_play.setToolTip("Play / Stop")
         self.btn_play.clicked.connect(self.toggle)
         ctr.addWidget(self.btn_play)
 
-        self.btn_id = QPushButton("🔎")
+        self.btn_id = QPushButton()
         self.btn_id.setObjectName("icon")
-        self.btn_id.setFixedSize(40, 40)
+        self.btn_id.setFixedSize(36, 36)
+        self.btn_id.setIcon(load_icon("search"))
+        self.btn_id.setIconSize(QSize(16, 16))
         self.btn_id.setToolTip("Identify song now")
         self.btn_id.clicked.connect(self.id_now)
         ctr.addWidget(self.btn_id)
 
-        self.btn_lrc = QPushButton("📝")
+        self.btn_lrc = QPushButton()
         self.btn_lrc.setObjectName("icon")
-        self.btn_lrc.setFixedSize(40, 40)
+        self.btn_lrc.setFixedSize(36, 36)
+        self.btn_lrc.setIcon(load_icon("lyrics"))
+        self.btn_lrc.setIconSize(QSize(16, 16))
         self.btn_lrc.setToolTip("Fetch lyrics now")
         self.btn_lrc.clicked.connect(self.lyrics_now)
         ctr.addWidget(self.btn_lrc)
 
-        self.btn_fav = QPushButton("♡")
+        self.btn_fav = QPushButton()
         self.btn_fav.setObjectName("icon")
-        self.btn_fav.setFixedSize(40, 40)
+        self.btn_fav.setFixedSize(36, 36)
+        self.btn_fav.setIcon(load_icon("heart"))
+        self.btn_fav.setIconSize(QSize(16, 16))
         self.btn_fav.setEnabled(False)
         self.btn_fav.setToolTip("Bookmark / remove bookmark")
         self.btn_fav.clicked.connect(self.toggle_fav)
         ctr.addWidget(self.btn_fav)
 
-        self.btn_yt = QPushButton("▶︎")
+        self.btn_yt = QPushButton()
         self.btn_yt.setObjectName("icon")
-        self.btn_yt.setFixedSize(40, 40)
+        self.btn_yt.setFixedSize(36, 36)
+        self.btn_yt.setIcon(load_icon("youtube"))
+        self.btn_yt.setIconSize(QSize(16, 16))
         self.btn_yt.setEnabled(False)
         self.btn_yt.setToolTip("YouTube")
         self.btn_yt.clicked.connect(self.open_yt)
@@ -540,7 +587,8 @@ class App(QMainWindow):
         ml.addWidget(hero)
 
         # Tuner
-        tun = QFrame(); tun.setObjectName("card")
+        tun = QFrame()
+        tun.setObjectName("card")
         tl = QVBoxLayout(tun)
         tl.setContentsMargins(14, 12, 14, 12)
         tl.setSpacing(8)
@@ -548,14 +596,17 @@ class App(QMainWindow):
         tr.addWidget(QLabel("Band"))
         self.band = QComboBox()
         self.band.addItem("All Bands")
-        for b in BANDS: self.band.addItem(b[0])
+        for b in BANDS:
+            self.band.addItem(b[0])
         tr.addWidget(self.band, 1)
         tr.addWidget(QLabel("Mode"))
-        self.mode = QComboBox(); self.mode.addItems(["wbfm", "fm", "am"])
+        self.mode = QComboBox()
+        self.mode.addItems(["wbfm", "fm", "am"])
         tr.addWidget(self.mode)
         tr.addWidget(QLabel("Gain"))
         self.gain = QDoubleSpinBox()
-        self.gain.setRange(0, 49); self.gain.setDecimals(0)
+        self.gain.setRange(0, 49)
+        self.gain.setDecimals(0)
         self.gain.setValue(float(self.cfg.get("gain", 35)))
         self.gain.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.gain.setFixedWidth(44)
@@ -566,8 +617,10 @@ class App(QMainWindow):
         self.scale.released.connect(self.on_scale_release)
         tl.addWidget(self.scale)
         self.freq = QDoubleSpinBox()
-        self.freq.setDecimals(1); self.freq.setSingleStep(0.1)
-        self.freq.setRange(0.1, 1700); self.freq.setValue(106.4)
+        self.freq.setDecimals(1)
+        self.freq.setSingleStep(0.1)
+        self.freq.setRange(0.1, 1700)
+        self.freq.setValue(106.4)
         self.freq.setSuffix(" MHz")
         self.freq.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.freq.valueChanged.connect(self.on_freq)
@@ -575,7 +628,7 @@ class App(QMainWindow):
         tl.addWidget(self.freq)
         ml.addWidget(tun)
 
-        # Lyrics under tuner
+        # Lyrics
         lyr_row = QHBoxLayout()
         self.lyrics_toggle = QPushButton("▾  Lyrics")
         self.lyrics_toggle.setObjectName("collapseBtn")
@@ -598,11 +651,9 @@ class App(QMainWindow):
         lp.addWidget(self.lyrics)
         ml.addWidget(self.lyrics_panel)
         ml.addStretch(1)
-
-        ml.addStretch()
         self.split.addWidget(mid)
 
-        # --- Right ---
+        # Right
         right = QWidget()
         right.setMinimumWidth(220)
         rl = QVBoxLayout(right)
@@ -612,13 +663,13 @@ class App(QMainWindow):
         rh.setContentsMargins(0, 0, 0, 0)
         rh.setSpacing(4)
         rh.addStretch()
-        self.btn_hide_right = HoverIcon("▸", "Hide side panel")
+        self.btn_hide_right = HoverIcon("panel-right", "Hide side panel")
         self.btn_hide_right.clicked.connect(lambda: self.toggle_right(False))
-        self.btn_auto_side = HoverIcon("🎵", "Auto Song ID")
+        self.btn_auto_side = HoverIcon("music", "Auto Song ID")
         self.btn_auto_side.setCheckable(True)
         self.btn_auto_side.clicked.connect(self._toggle_auto_side)
         rh.addWidget(self.btn_auto_side)
-        self.btn_theme_side = HoverIcon("☾", "Light / Dark")
+        self.btn_theme_side = HoverIcon("moon", "Light / Dark")
         self.btn_theme_side.clicked.connect(self.toggle_theme)
         rh.addWidget(self.btn_theme_side)
         rh.addWidget(self.btn_hide_right)
@@ -641,7 +692,8 @@ class App(QMainWindow):
         rl.addWidget(self.col_lib, 1)
 
         self.col_tools = Collapse("Tools", False)
-        g = QGridLayout(); g.setSpacing(8)
+        g = QGridLayout()
+        g.setSpacing(8)
         for i, (txt, slot, tip) in enumerate([
             ("SDR++", self.start_sdr, "Open SDR++"),
             ("Flights", self.start_flights, "ADS-B map"),
@@ -650,16 +702,20 @@ class App(QMainWindow):
             ("Test", self.test_dongle, "rtl_test"),
             ("Stop", self.free_all, "Stop all SDR apps"),
         ]):
-            b = QPushButton(txt); b.setObjectName("pill")
-            b.setToolTip(tip); b.clicked.connect(slot)
+            b = QPushButton(txt)
+            b.setObjectName("pill")
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
             g.addWidget(b, i // 2, i % 2)
         self.col_tools.body_l.addLayout(g)
         rl.addWidget(self.col_tools)
+
         self.col_log = Collapse("Log", False)
-        self.logv = QTextEdit(); self.logv.setReadOnly(True); self.logv.setFixedHeight(90)
+        self.logv = QTextEdit()
+        self.logv.setReadOnly(True)
+        self.logv.setFixedHeight(90)
         self.col_log.body_l.addWidget(self.logv)
         rl.addWidget(self.col_log)
-
         rl.addStretch(1)
         self.split.addWidget(right)
 
@@ -668,7 +724,6 @@ class App(QMainWindow):
         self.split.setStretchFactor(2, 3)
         self.split.setSizes([360, 480, 260])
 
-        # Band: use activated only
         try:
             self.band.currentTextChanged.disconnect()
         except Exception:
@@ -680,7 +735,6 @@ class App(QMainWindow):
         self.band.activated.connect(self.on_band)
         self.freq.valueChanged.connect(self.on_freq)
 
-        # Startup station
         su = self.cfg.get("startup")
         if isinstance(su, dict) and su.get("freq"):
             try:
@@ -696,145 +750,80 @@ class App(QMainWindow):
                 pass
 
         self.statusBar().showMessage("Ready")
-        from PyQt5.QtCore import QTimer as _QTimer
-        _QTimer.singleShot(400, self._apply_startup)
+        QTimer.singleShot(400, self._apply_startup)
         QToolTip.setFont(QFont("Sans", 10))
-        if self.cats.count(): self.cats.setCurrentRow(0)
+        if self.cats.count():
+            self.cats.setCurrentRow(0)
         self.on_band("FM")
-        self.refresh_hist(); self.refresh_favs()
+        self.refresh_hist()
+        self.refresh_favs()
 
     def _style(self):
         if self.dark:
             self.setStyleSheet("""
                 QMainWindow, QWidget { background:#000; color:#f5f5f7; font-size:13px; }
-                QFrame#card { background:#1c1c1e; border:none; border-radius:16px; }
+                QFrame#card { background:transparent; border:none; border-radius:16px; }
                 QLabel#art { background:#2c2c2e; border-radius:12px; color:#636366; font-size:42px; }
                 QLabel#title { font-size:22px; font-weight:700; }
                 QLabel#sub { color:#8e8e93; font-size:12px; }
                 QLabel#song { color:#30d158; font-size:13px; }
                 QLabel#h { background: transparent; }
                 QLabel#toast { background:#f5f5f7; color:#1d1d1f; border-radius:14px; padding:12px 16px; }
-                QPushButton#play { background:#30d158; color:#000; border:none; border-radius:24px; font-size:18px; }
-                QPushButton#icon {
-                    background:#2c2c2e; color:#f5f5f7; border:none; border-radius:20px; font-size:15px;
-                }
+                QPushButton#play { background:#30d158; color:#000; border:none; border-radius:22px; }
+                QPushButton#icon { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:21px; }
                 QPushButton#icon:checked { background:#30d158; color:#000; }
                 QPushButton#icon:disabled { color:#636366; }
-                QPushButton#pill {
-                    background:#2c2c2e; color:#f5f5f7; border:none; border-radius:14px; padding:10px;
-                }
-                QPushButton#collapseBtn {
-                    background:transparent; border:none; text-align:left; font-weight:600; color:#8e8e93; padding:4px 0;
-                }
+                QPushButton#pill { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:14px; padding:10px; }
+                QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#8e8e93; padding:4px 0; }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
                 QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
-                QListWidget::item:hover { background: rgba(0,0,0,0.04); border-radius: 8px; }
-                QComboBox, QDoubleSpinBox {
-                    background:#2c2c2e; border:none; border-radius:10px; padding:7px 10px; color:#f5f5f7;
-                }
+                QListWidget::item:hover { background: rgba(255,255,255,0.06); border-radius: 8px; }
+                QComboBox, QDoubleSpinBox { background:transparent; border:none; border-radius:10px; padding:7px 10px; color:#f5f5f7; }
                 QTextEdit { background:#2c2c2e; border:none; border-radius:12px; color:#f5f5f7; }
                 QSplitter::handle { background:#2c2c2e; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#8e8e93; padding:8px 12px; }
                 QTabBar::tab:selected { color:#f5f5f7; }
-                QFrame#card {
-                    background: #1c1c1e;
-                    border: none;
-                    border-radius: 14px;
-                }
-                QComboBox {
-                    background: #2c2c2e;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 7px 12px;
-                    color: #f5f5f7;
-                }
-                QComboBox::drop-down { border: none; width: 24px; }
-                QDoubleSpinBox {
-                    background: #2c2c2e;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 7px 12px;
-                    color: #f5f5f7;
-                }
                 QStatusBar { color:#8e8e93; background:#000; }
-                QToolTip {
-                    background-color: #2c2c2e; color: #f5f5f7;
-                    border: 1px solid #3a3a3c; border-radius: 8px;
-                    padding: 6px 10px; font-size: 11px;
-                }
+                QToolTip { background-color: #2c2c2e; color: #f5f5f7; border: 1px solid #3a3a3c; border-radius: 8px; padding: 6px 10px; font-size: 11px; }
                 QScrollBar:vertical { width:0px; }
                 QScrollBar:horizontal { height:0px; }
             """)
         else:
             self.setStyleSheet("""
                 QMainWindow, QWidget { background:#f5f5f7; color:#1d1d1f; font-size:13px; }
-                QFrame#card { background:#ffffff; border:none; border-radius:16px; }
+                QFrame#card { background:transparent; border:none; border-radius:16px; }
                 QLabel#art { background:#f2f2f7; border-radius:12px; color:#aeaeb2; font-size:42px; }
                 QLabel#title { font-size:22px; font-weight:700; }
                 QLabel#sub { color:#6e6e73; font-size:12px; }
                 QLabel#song { color:#248a3d; font-size:13px; }
                 QLabel#h { background: transparent; }
                 QLabel#toast { background:#1d1d1f; color:#f5f5f7; border-radius:14px; padding:12px 16px; }
-                QPushButton#play { background:#30d158; color:#fff; border:none; border-radius:24px; font-size:18px; }
-                QPushButton#icon {
-                    background:#f2f2f7; color:#1d1d1f; border:none; border-radius:20px; font-size:15px;
-                }
+                QPushButton#play { background:#30d158; color:#fff; border:none; border-radius:22px; }
+                QPushButton#icon { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:21px; }
                 QPushButton#icon:checked { background:#30d158; color:#fff; }
                 QPushButton#icon:disabled { color:#aeaeb2; }
-                QPushButton#pill {
-                    background:#f2f2f7; color:#1d1d1f; border:none; border-radius:14px; padding:10px;
-                }
-                QPushButton#collapseBtn {
-                    background:transparent; border:none; text-align:left; font-weight:600; color:#6e6e73; padding:4px 0;
-                }
+                QPushButton#pill { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:14px; padding:10px; }
+                QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#6e6e73; padding:4px 0; }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
                 QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
                 QListWidget::item:hover { background: rgba(0,0,0,0.04); border-radius: 8px; }
-                QComboBox, QDoubleSpinBox {
-                    background:#f2f2f7; border:none; border-radius:10px; padding:7px 10px;
-                }
+                QComboBox, QDoubleSpinBox { background:transparent; border:none; border-radius:10px; padding:7px 10px; }
                 QTextEdit { background:#f2f2f7; border:none; border-radius:12px; }
                 QSplitter::handle { background:#e5e5ea; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#6e6e73; padding:8px 12px; }
                 QTabBar::tab:selected { color:#1d1d1f; }
-                QFrame#card {
-                    background: #ffffff;
-                    border: none;
-                    border-radius: 14px;
-                }
-                QComboBox {
-                    background: #f2f2f7;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 7px 12px;
-                    min-height: 18px;
-                }
-                QComboBox::drop-down { border: none; width: 24px; }
-                QDoubleSpinBox {
-                    background: #f2f2f7;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 7px 12px;
-                }
                 QStatusBar { color:#6e6e73; background:#f5f5f7; }
-                QToolTip {
-                    background-color: #1d1d1f; color: #f5f5f7;
-                    border: none; border-radius: 8px;
-                    padding: 6px 10px; font-size: 11px;
-                }
+                QToolTip { background-color: #1d1d1f; color: #f5f5f7; border: none; border-radius: 8px; padding: 6px 10px; font-size: 11px; }
                 QScrollBar:vertical { width:0px; }
                 QScrollBar:horizontal { height:0px; }
             """)
 
     def toggle_theme(self):
         self.dark = not self.dark
-        icon = "☀" if self.dark else "☾"
-        if hasattr(self, "btn_theme"):
-            self.btn_theme.setText(icon)
         if hasattr(self, "btn_theme_side"):
-            self.btn_theme_side.setText(icon)
+            self.btn_theme_side.setIcon(load_icon("sun" if self.dark else "moon"))
         self.scale.dark = self.dark
         self._style()
         self.scale.update()
@@ -846,23 +835,50 @@ class App(QMainWindow):
 
     def log(self, m):
         line = f"{datetime.now().strftime('%H:%M:%S')}  {m}"
-        print(line); self.sig.log.emit(line)
+        print(line)
+        self.sig.log.emit(line)
 
     def _on_log(self, line):
-        self.logv.append(line); self.logv.moveCursor(QTextCursor.End)
+        self.logv.append(line)
+        self.logv.moveCursor(QTextCursor.End)
 
     def _sync_band(self, f):
         name = band_for_freq(float(f))
         self._band_lock = True
         try:
             idx = self.band.findText(name)
-            if idx < 0: idx = self.band.findText("All Bands")
+            if idx < 0:
+                idx = self.band.findText("All Bands")
             if idx >= 0 and self.band.currentIndex() != idx:
                 self.band.blockSignals(True)
                 self.band.setCurrentIndex(idx)
                 self.band.blockSignals(False)
         finally:
             self._band_lock = False
+
+    def _highlight_station_for_freq(self, freq):
+        try:
+            freq = round(float(freq), 1)
+        except Exception:
+            return
+        matched = False
+        for i in range(self.stations_list.count()):
+            it = self.stations_list.item(i)
+            s = it.data(Qt.UserRole)
+            if isinstance(s, dict):
+                try:
+                    sf = round(float(s.get("freq", 0)), 1)
+                except Exception:
+                    continue
+                if abs(sf - freq) < 0.05:
+                    self.stations_list.blockSignals(True)
+                    self.stations_list.setCurrentRow(i)
+                    self.stations_list.scrollToItem(it)
+                    self.stations_list.blockSignals(False)
+                    matched = True
+                    break
+        if not matched:
+            self.stations_list.clearSelection()
 
     def on_band(self, *args):
         if getattr(self, "_band_lock", False):
@@ -887,9 +903,11 @@ class App(QMainWindow):
         hit = None
         for n, a, b, m in BANDS:
             if n == name:
-                hit = (n, float(a), float(b), m); break
+                hit = (n, float(a), float(b), m)
+                break
         if not hit:
-            self.log("Band unknown: " + repr(name)); return
+            self.log("Band unknown: " + repr(name))
+            return
         n, a, b, m = hit
         mid = round(((a + b) / 2.0) * 10) / 10.0
         self._band_lock = True
@@ -902,7 +920,8 @@ class App(QMainWindow):
             self.scale.setValue(mid)
             self.mode.blockSignals(True)
             i = self.mode.findText(m)
-            if i >= 0: self.mode.setCurrentIndex(i)
+            if i >= 0:
+                self.mode.setCurrentIndex(i)
             self.mode.blockSignals(False)
         finally:
             self._band_lock = False
@@ -913,7 +932,6 @@ class App(QMainWindow):
             self.log(str(ex))
 
     def on_scale(self, v):
-        """Drag: update spinbox/mode only (no audio restart)."""
         v = round(float(v), 1)
         self.freq.blockSignals(True)
         self.freq.setValue(v)
@@ -927,6 +945,7 @@ class App(QMainWindow):
             self._sync_band(v)
         except Exception:
             pass
+        self._highlight_station_for_freq(v)
 
     def on_scale_release(self, v=None):
         try:
@@ -942,6 +961,7 @@ class App(QMainWindow):
             self._sync_band(v)
         except Exception:
             pass
+        self._highlight_station_for_freq(v)
         if not getattr(self, "playing", False):
             return
         self.play(v, m, "%.1f MHz" % v, quick=True)
@@ -949,6 +969,7 @@ class App(QMainWindow):
     def commit_tune(self):
         v = float(self.freq.value())
         m = self.mode.currentText() or mode_for_freq(v)
+        self._highlight_station_for_freq(v)
         if not getattr(self, "playing", False):
             return
         try:
@@ -964,26 +985,33 @@ class App(QMainWindow):
             self.scale.blockSignals(False)
         except Exception:
             pass
+        self._highlight_station_for_freq(v)
 
     def load_cat(self, cat):
         self.stations_list.blockSignals(True)
         self.stations_list.clear()
         if not cat or cat not in self.stations:
-            self.stations_list.blockSignals(False); return
+            self.stations_list.blockSignals(False)
+            return
         for s in self.stations[cat]:
-            if not isinstance(s, dict): continue
+            if not isinstance(s, dict):
+                continue
             name, freq = str(s.get("name", "?")), s.get("freq", 0)
             it = QListWidgetItem(f"{name}  ·  {freq}")
             it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
             it.setData(Qt.UserRole, s)
             self.stations_list.addItem(it)
         self.stations_list.blockSignals(False)
+        try:
+            self._highlight_station_for_freq(self.freq.value())
+        except Exception:
+            pass
 
     def stations_menu(self, pos):
-        from PyQt5.QtWidgets import QMenu, QInputDialog, QMessageBox
         item = self.stations_list.itemAt(pos)
         cat_item = self.cats.currentItem()
-        if not cat_item: return
+        if not cat_item:
+            return
         cat = cat_item.text()
         menu = QMenu(self)
         act_add = menu.addAction("Add station…")
@@ -999,156 +1027,217 @@ class App(QMainWindow):
         for a in (act_ren, act_del, act_freq, act_mode, act_def, act_top, act_bot):
             a.setEnabled(item is not None)
         chosen = menu.exec_(self.stations_list.mapToGlobal(pos))
-        if chosen is None: return
+        if chosen is None:
+            return
         if chosen == act_add:
             name, ok = QInputDialog.getText(self, "Add station", "Name:")
-            if not ok or not name.strip(): return
+            if not ok or not name.strip():
+                return
             freq, ok = QInputDialog.getDouble(self, "Frequency", "MHz:", float(self.freq.value()), 0.1, 1700.0, 1)
-            if not ok: return
+            if not ok:
+                return
             self.stations.setdefault(cat, []).append({"name": name.strip(), "freq": float(freq), "mode": mode_for_freq(freq)})
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
-            try: self.toast.show_msg("Added " + name.strip())
-            except Exception: pass
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
             return
         s = item.data(Qt.UserRole) if item else None
-        if not isinstance(s, dict): return
+        if not isinstance(s, dict):
+            return
         def _match(st):
             return st.get("name") == s.get("name") and float(st.get("freq", 0)) == float(s.get("freq", 0))
         if chosen == act_ren:
             name, ok = QInputDialog.getText(self, "Rename", "Name:", text=s.get("name", ""))
-            if not ok or not name.strip(): return
+            if not ok or not name.strip():
+                return
             for st in self.stations.get(cat, []):
-                if _match(st): st["name"] = name.strip(); break
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+                if _match(st):
+                    st["name"] = name.strip()
+                    break
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
         elif chosen == act_del:
-            if QMessageBox.question(self, "Remove", "Remove " + str(s.get("name")) + "?") != QMessageBox.Yes: return
+            if QMessageBox.question(self, "Remove", "Remove " + str(s.get("name")) + "?") != QMessageBox.Yes:
+                return
             self.stations[cat] = [st for st in self.stations.get(cat, []) if not _match(st)]
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
         elif chosen == act_freq:
             freq, ok = QInputDialog.getDouble(self, "Frequency", "MHz:", float(s.get("freq", 100)), 0.1, 1700.0, 1)
-            if not ok: return
+            if not ok:
+                return
             for st in self.stations.get(cat, []):
-                if _match(st): st["freq"] = float(freq); st["mode"] = mode_for_freq(freq); break
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+                if _match(st):
+                    st["freq"] = float(freq)
+                    st["mode"] = mode_for_freq(freq)
+                    break
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
         elif chosen == act_mode:
-            modes = ["wbfm", "fm", "am"]; cur = s.get("mode", "wbfm")
+            modes = ["wbfm", "fm", "am"]
+            cur = s.get("mode", "wbfm")
             mode, ok = QInputDialog.getItem(self, "Mode", "Mode:", modes, modes.index(cur) if cur in modes else 0, False)
-            if not ok: return
+            if not ok:
+                return
             for st in self.stations.get(cat, []):
-                if _match(st): st["mode"] = mode; break
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+                if _match(st):
+                    st["mode"] = mode
+                    break
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
         elif chosen == act_def:
             self.cfg["startup"] = {"cat": cat, "name": s.get("name"), "freq": s.get("freq"), "mode": s.get("mode")}
             save_json(CONFIG, self.cfg)
-            try: self.toast.show_msg("Default: " + str(s.get("name")))
-            except Exception: pass
+            try:
+                self.toast.show_msg("Default: " + str(s.get("name")))
+            except Exception:
+                pass
         elif chosen == act_top:
             lst = self.stations.get(cat, [])
             self.stations[cat] = [s] + [st for st in lst if not _match(st)]
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
         elif chosen == act_bot:
             lst = self.stations.get(cat, [])
             self.stations[cat] = [st for st in lst if not _match(st)] + [s]
-            save_json(STATIONS_F, self.stations); self.load_cat(cat)
+            save_json(STATIONS_F, self.stations)
+            self.load_cat(cat)
 
     def _stations_reordered(self, *args):
         cat_item = self.cats.currentItem()
-        if not cat_item: return
+        if not cat_item:
+            return
         cat = cat_item.text()
-        if cat not in self.stations: return
+        if cat not in self.stations:
+            return
         ordered = []
         for i in range(self.stations_list.count()):
             data = self.stations_list.item(i).data(Qt.UserRole)
-            if isinstance(data, dict): ordered.append(data)
+            if isinstance(data, dict):
+                ordered.append(data)
         if ordered:
             self.stations[cat] = ordered
             save_json(STATIONS_F, self.stations)
 
-    def _finish_ui_hooks(self):
-        try: self.band.activated.disconnect()
-        except Exception: pass
-        try: self.band.currentTextChanged.disconnect()
-        except Exception: pass
-        self.band.activated.connect(self.on_band)
-        try: self.freq.valueChanged.disconnect()
-        except Exception: pass
-        self.freq.valueChanged.connect(self.on_freq)
-        try: self.scale.changed.disconnect()
-        except Exception: pass
-        self.log("Band items: " + ", ".join(self.band.itemText(i) for i in range(self.band.count())))
-        su = self.cfg.get("startup") if isinstance(getattr(self, "cfg", None), dict) else None
-        if isinstance(su, dict) and su.get("freq") is not None:
-            cat = su.get("cat")
-            if cat and cat in self.stations:
-                for i in range(self.cats.count()):
-                    if self.cats.item(i).text() == cat:
-                        self.cats.setCurrentRow(i); break
-            try:
-                freq = float(su["freq"])
-                mode = su.get("mode") or mode_for_freq(freq)
-                self.freq.blockSignals(True); self.freq.setValue(freq); self.freq.blockSignals(False)
-                self.scale.setValue(freq)
-                self.mode.blockSignals(True)
-                mi = self.mode.findText(mode)
-                if mi >= 0: self.mode.setCurrentIndex(mi)
-                self.mode.blockSignals(False)
-                for i in range(self.stations_list.count()):
-                    data = self.stations_list.item(i).data(Qt.UserRole)
-                    if isinstance(data, dict) and data.get("name") == su.get("name"):
-                        self.stations_list.setCurrentRow(i); break
-                self.log("Startup: " + str(su.get("name")) + f" {freq} MHz")
-            except Exception as ex:
-                self.log("Startup: " + str(ex))
-
     def play_item(self, item):
         s = item.data(Qt.UserRole)
-        if not s: return
-        self.freq.setValue(s["freq"]); self.scale.setValue(s["freq"])
-        self.mode.setCurrentText(s["mode"]); self._sync_band(s["freq"])
+        if not s:
+            return
+        self.freq.setValue(s["freq"])
+        self.scale.setValue(s["freq"])
+        self.mode.setCurrentText(s["mode"])
+        self._sync_band(s["freq"])
         self.play(s["freq"], s["mode"], s["name"])
 
     def clear_song(self):
-        self.song = None; self.genius_url = None
+        self.song = None
+        self.genius_url = None
         self.song_l.setText("")
-        self.btn_fav.setEnabled(False); self.btn_fav.setText("♡")
+        self.btn_fav.setEnabled(False)
+        self.btn_fav.setIcon(load_icon("heart"))
         self.btn_yt.setEnabled(False)
-        self.art.setPixmap(QPixmap()); self.art.setText("♪")
-        self.lyrics.setPlainText(""); self.lrc = []; self.lrc_timer.stop()
+        self.art.setPixmap(QPixmap())
+        self.art.setText("♪")
+        self.lyrics.setPlainText("")
+        self.lrc = []
+        self.lrc_timer.stop()
 
     def set_playing(self, on, name="", detail=""):
         self.playing = on
         if on:
-            self.btn_play.setText("⏹"); self.title.setText(name or "Playing"); self.sub.setText(detail)
+            self.btn_play.setIcon(load_icon("stop"))
+            self.title.setText(name or "Playing")
+            self.sub.setText(detail)
         else:
-            self.btn_play.setText("▶"); self.title.setText("Not playing"); self.sub.setText("Pick a station")
+            self.btn_play.setIcon(load_icon("play"))
+            self.title.setText("Not playing")
+            self.sub.setText("Pick a station")
             self.clear_song()
 
     def stop(self):
         self.stop_id()
+        try:
+            if self.rtl and self.rtl.poll() is None:
+                self.rtl.terminate()
+                try:
+                    self.rtl.wait(timeout=0.4)
+                except Exception:
+                    self.rtl.kill()
+        except Exception:
+            pass
         subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
-        self.rtl = None; self.set_playing(False)
+        self.rtl = None
+        self.set_playing(False)
 
     def toggle(self):
-        if self.playing: self.stop()
-        else: self.play(self.freq.value(), self.mode.currentText(), f"{self.freq.value():.1f} MHz")
+        if self.playing:
+            self.stop()
+        else:
+            self.play(self.freq.value(), self.mode.currentText(), f"{self.freq.value():.1f} MHz")
 
     def play(self, freq, mode, name="", quick=False):
-        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
-        time.sleep(0.08 if quick else 0.2); self.stop_id(); self.clear_song()
-        gain = int(self.gain.value()); self.cfg["gain"] = gain; save_json(CONFIG, self.cfg)
-        hz = int(round(freq * 1e6))
+        try:
+            if self.rtl and self.rtl.poll() is None:
+                self.rtl.terminate()
+                try:
+                    self.rtl.wait(timeout=0.3)
+                except Exception:
+                    self.rtl.kill()
+        except Exception as e:
+            self.log(f"play: old process: {e}")
+
+        subprocess.run(["killall", "-9", "rtl_fm", "play"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.08 if quick else 0.15)
+
+        self.stop_id()
+        self.clear_song()
+
+        try:
+            gain = int(self.gain.value())
+            self.cfg["gain"] = gain
+            save_json(CONFIG, self.cfg)
+            hz = int(round(float(freq) * 1e6))
+        except Exception as e:
+            self.log(f"play: bad parameters: {e}")
+            self.set_playing(False)
+            return
+
         detail = f"{freq:.3f} MHz · {mode.upper()} · gain {gain}"
         self.set_playing(True, name or f"{freq:.1f} MHz", detail)
         self.log(f"▶ {name} · {detail}")
+
         if mode == "wbfm":
-            cmd = f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast -r 32000 -l 0 -E deemp - | play -r 32000 -t raw -e signed -b 16 -c 1 -q -"
+            cmd = (f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast "
+                   f"-r 32000 -l 0 -E deemp - | "
+                   f"play -r 32000 -t raw -e signed -b 16 -c 1 -q -")
         elif mode == "am":
-            cmd = f"rtl_fm -f {hz} -M am -g {gain} -s 12000 -r 12000 -l 0 - | play -r 12000 -t raw -e signed -b 16 -c 1 -q -"
+            cmd = (f"rtl_fm -f {hz} -M am -g {gain} -s 12000 -r 12000 -l 0 - | "
+                   f"play -r 12000 -t raw -e signed -b 16 -c 1 -q -")
         else:
-            cmd = f"rtl_fm -f {hz} -M fm -g {gain} -s 22050 -r 22050 -l 0 - | play -r 22050 -t raw -e signed -b 16 -c 1 -q -"
-        try: self.rtl = subprocess.Popen(cmd, shell=True)
-        except Exception as e: self.log(str(e)); self.set_playing(False); return
-        if bool(self.cfg.get("song_id", True)): self.start_id()
+            cmd = (f"rtl_fm -f {hz} -M fm -g {gain} -s 22050 -r 22050 -l 0 - | "
+                   f"play -r 22050 -t raw -e signed -b 16 -c 1 -q -")
+
+        self.log(f"cmd: {cmd}")
+
+        try:
+            self.rtl = subprocess.Popen(cmd, shell=True)
+        except Exception as e:
+            self.log(f"play: Popen failed: {e}")
+            self.set_playing(False)
+            return
+
+        time.sleep(0.3)
+        if self.rtl.poll() is not None:
+            self.log("play: process exited immediately — check dongle with: lsusb | grep -i rtl")
+            self.set_playing(False)
+            self.rtl = None
+            return
+
+        self.log("play: started OK")
+        self._highlight_station_for_freq(freq)
+
+        if bool(self.cfg.get("song_id", True)):
+            self.start_id()
         else:
             threading.Thread(target=lambda: (time.sleep(8), self.playing and self.id_now()), daemon=True).start()
 
@@ -1162,15 +1251,20 @@ class App(QMainWindow):
         self.toast.show_msg("Auto Song ID " + ("on" if on else "off"))
 
     def on_auto(self, on):
-        self.cfg["song_id"] = on; save_json(CONFIG, self.cfg)
-        if on and self.playing: self.start_id()
-        else: self.stop_id()
+        self.cfg["song_id"] = on
+        save_json(CONFIG, self.cfg)
+        if on and self.playing:
+            self.start_id()
+        else:
+            self.stop_id()
 
     def _ensure_aio(self):
-        if self.aio_loop and self.aio_thread and self.aio_thread.is_alive(): return
+        if self.aio_loop and self.aio_thread and self.aio_thread.is_alive():
+            return
         self.aio_loop = asyncio.new_event_loop()
         def run(loop):
-            asyncio.set_event_loop(loop); loop.run_forever()
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
         self.aio_thread = threading.Thread(target=run, args=(self.aio_loop,), daemon=True)
         self.aio_thread.start()
 
@@ -1179,75 +1273,101 @@ class App(QMainWindow):
         return asyncio.run_coroutine_threadsafe(coro, self.aio_loop)
 
     def start_id(self):
-        if not self.playing: return
-        if self.id_thread and self.id_thread.is_alive(): return
+        if not self.playing:
+            return
+        if self.id_thread and self.id_thread.is_alive():
+            return
         self.id_stop.clear()
         self.id_thread = threading.Thread(target=self._id_loop, daemon=True)
         self.id_thread.start()
 
     def stop_id(self):
-        self.id_stop.set(); self.id_thread = None
+        self.id_stop.set()
+        self.id_thread = None
 
     def _id_loop(self):
         for _ in range(12):
-            if self.id_stop.is_set() or not self.playing: return
+            if self.id_stop.is_set() or not self.playing:
+                return
             time.sleep(1)
         while not self.id_stop.is_set() and self.playing:
             if not self.id_busy:
-                try: self._submit(self._identify())
-                except Exception: pass
+                try:
+                    self._submit(self._identify())
+                except Exception:
+                    pass
             for _ in range(45):
-                if self.id_stop.is_set() or not self.playing: return
+                if self.id_stop.is_set() or not self.playing:
+                    return
                 time.sleep(1)
 
     def id_now(self):
-        if not self.playing: self.toast.show_msg("Play a station first"); return
-        if self.id_busy: self.toast.show_msg("Already identifying…"); return
-        try: self._submit(self._identify())
-        except Exception as e: self.log(str(e))
+        if not self.playing:
+            self.toast.show_msg("Play a station first")
+            return
+        if self.id_busy:
+            self.toast.show_msg("Already identifying…")
+            return
+        try:
+            self._submit(self._identify())
+        except Exception as e:
+            self.log(str(e))
 
     async def _identify(self):
-        if self.id_busy: return
+        if self.id_busy:
+            return
         self.id_busy = True
         try:
             self.sig.status.emit("Listening…")
             wav = str(SNIP / "sdr_song_id.wav")
             ok = await asyncio.to_thread(self.capture, wav, 12)
-            if not ok: self.sig.status.emit("Capture failed"); return
+            if not ok:
+                self.sig.status.emit("Capture failed")
+                return
             song = await asyncio.to_thread(self.songrec, wav)
             if not song and self.ac_key:
                 song = await asyncio.to_thread(self.acoustid, wav)
-            if song: self.sig.result.emit(song)
-            else: self.sig.status.emit("No match")
+            if song:
+                self.sig.result.emit(song)
+            else:
+                self.sig.status.emit("No match")
         except Exception as e:
             self.sig.status.emit(str(e))
         finally:
             self.id_busy = False
 
     def capture(self, path, sec=12):
-        try: Path(path).unlink(missing_ok=True)
-        except Exception: pass
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            pass
         tries = []
         try:
             r = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=2)
             sink = (r.stdout or "").strip()
             if sink:
-                tries.append(["ffmpeg","-y","-f","pulse","-i",f"{sink}.monitor","-t",str(sec),"-ac","1","-ar","44100",path])
-        except Exception: pass
-        tries.append(["ffmpeg","-y","-f","pulse","-i","default","-t",str(sec),"-ac","1","-ar","44100",path])
+                tries.append(["ffmpeg", "-y", "-f", "pulse", "-i", f"{sink}.monitor",
+                              "-t", str(sec), "-ac", "1", "-ar", "44100", path])
+        except Exception:
+            pass
+        tries.append(["ffmpeg", "-y", "-f", "pulse", "-i", "default",
+                      "-t", str(sec), "-ac", "1", "-ar", "44100", path])
         for cmd in tries:
             try:
-                r = subprocess.run(cmd, capture_output=True, timeout=sec+6)
+                r = subprocess.run(cmd, capture_output=True, timeout=sec + 6)
                 if r.returncode == 0 and Path(path).exists() and Path(path).stat().st_size > 2000:
                     return True
-            except Exception: continue
+            except Exception:
+                continue
         return False
 
     def songrec(self, wav):
         for b in ("/snap/bin/songrec", "songrec"):
             if b == "songrec" or Path(b).exists():
-                bin_ = b; break
-        else: return None
+                bin_ = b
+                break
+        else:
+            return None
         try:
             r = subprocess.run([bin_, "recognize", wav], capture_output=True, text=True, timeout=30)
             out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
@@ -1256,16 +1376,19 @@ class App(QMainWindow):
                     a, t = line.split(" - ", 1)
                     return {"title": t.strip(), "artist": a.strip(), "album": "",
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-        except Exception: return None
+        except Exception:
+            return None
         return None
 
     def acoustid(self, wav):
         try:
             r = subprocess.run(["fpcalc", "-json", wav], capture_output=True, text=True, timeout=15)
-            if r.returncode != 0: return None
+            if r.returncode != 0:
+                return None
             data = json.loads(r.stdout)
             fp, dur = data.get("fingerprint"), data.get("duration")
-            if not fp: return None
+            if not fp:
+                return None
             post = urllib.parse.urlencode({
                 "client": self.ac_key.strip(), "meta": "recordings releasegroups compress",
                 "duration": int(float(dur)), "fingerprint": fp,
@@ -1274,21 +1397,26 @@ class App(QMainWindow):
                 headers={"User-Agent": "SDR-Radio/1.0", "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read().decode())
-            if result.get("status") != "ok" or not result.get("results"): return None
+            if result.get("status") != "ok" or not result.get("results"):
+                return None
             best = result["results"][0]
-            if best.get("score", 0) < 0.25: return None
+            if best.get("score", 0) < 0.25:
+                return None
             recs = best.get("recordings") or []
-            if not recs: return None
+            if not recs:
+                return None
             rec = recs[0]
             title = rec.get("title") or "?"
-            artists = ", ".join(a.get("name","") for a in rec.get("artists", [])) or "?"
+            artists = ", ".join(a.get("name", "") for a in rec.get("artists", [])) or "?"
             album = (rec.get("releasegroups") or [{}])[0].get("title", "") if rec.get("releasegroups") else ""
             return {"title": title, "artist": artists, "album": album,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-        except Exception: return None
+        except Exception:
+            return None
 
     def on_status(self, msg):
-        if not self.song: self.song_l.setText(msg)
+        if not self.song:
+            self.song_l.setText(msg)
         self.log(f"🎵 {msg}")
 
     def on_result(self, song):
@@ -1301,14 +1429,16 @@ class App(QMainWindow):
         self.song_l.setText(text)
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
-        self.btn_fav.setText("♥" if self._is_fav(song) else "♡")
-        self.log(f"♪ {text}"); self.toast.show_msg(f"♪  {text}")
-        self.history.insert(0, song); self.history = self.history[:100]
-        save_json(HIST_F, self.history); self.refresh_hist()
+        self.btn_fav.setIcon(load_icon("heart"))
+        self.log(f"♪ {text}")
+        self.toast.show_msg(f"♪  {text}")
+        self.history.insert(0, song)
+        self.history = self.history[:100]
+        save_json(HIST_F, self.history)
+        self.refresh_hist()
         threading.Thread(target=self._post, args=(song,), daemon=True).start()
 
     def _post(self, song):
-        """Album art + lyrics always after any successful ID."""
         try:
             path = self.fetch_art(song.get("artist", ""), song.get("title", ""))
             if path:
@@ -1331,12 +1461,6 @@ class App(QMainWindow):
         except Exception as e:
             self.sig.lyrics.emit("No lyrics found.")
             self.log(f"Lyrics: {e}")
-        try:
-            meta = self.fetch_gn_meta(song.get("artist", ""), song.get("title", ""))
-            if meta and meta.get("url"):
-                self.genius_url = meta["url"]
-        except Exception:
-            pass
 
     def on_lyrics(self, text):
         self.lyrics.setPlainText(text or "")
@@ -1349,37 +1473,37 @@ class App(QMainWindow):
                 self.lrc_timer.start(400)
 
     def _tick_lrc(self):
-        if not self.lrc or self.lrc_t0 is None: return
+        if not self.lrc or self.lrc_t0 is None:
+            return
         el = time.time() - self.lrc_t0
         idx = 0
         for i, (ts, _) in enumerate(self.lrc):
-            if ts <= el: idx = i
+            if ts <= el:
+                idx = i
         new = "\n".join(f"{'▶ ' if i==idx else '  '}{ln}" for i, (_, ln) in enumerate(self.lrc))
-        if self.lyrics.toPlainText() != new: self.lyrics.setPlainText(new)
+        if self.lyrics.toPlainText() != new:
+            self.lyrics.setPlainText(new)
 
     def fetch_art(self, artist, title):
         ART.mkdir(parents=True, exist_ok=True)
         dest = ART / "current.jpg"
         urls = []
-        for url_build in [
-            lambda: self._itunes(artist, title),
-            lambda: self._deezer(artist, title),
-        ]:
+        for url_build in [lambda: self._itunes(artist, title), lambda: self._deezer(artist, title)]:
             try:
                 u = url_build()
-                if u: urls.append(u)
-            except Exception: pass
+                if u:
+                    urls.append(u)
+            except Exception:
+                pass
         for u in urls:
             try:
                 req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 SDR-Radio/1.0"})
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     dest.write_bytes(resp.read())
                 if dest.exists() and dest.stat().st_size > 800:
-                    self.log(f"🖼 Art OK ({dest.stat().st_size} B)")
                     return str(dest)
-            except Exception as e:
-                self.log(f"Art fail: {e}")
-        self.log("🖼 No album art")
+            except Exception:
+                pass
         return None
 
     def _itunes(self, artist, title):
@@ -1408,7 +1532,8 @@ class App(QMainWindow):
         try:
             pix = QPixmap(path)
             if pix.isNull():
-                self.art.setText("♪"); return
+                self.art.setText("♪")
+                return
             pix = pix.scaled(132, 132, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             if pix.width() >= 132 and pix.height() >= 132:
                 pix = pix.copy((pix.width()-132)//2, (pix.height()-132)//2, 132, 132)
@@ -1417,11 +1542,7 @@ class App(QMainWindow):
             self.art.setText("♪")
 
     def fetch_lrc(self, artist, title):
-        """Fetch lyrics from LRCLIB using multi-strategy search inspired by LRCGET
-        (https://github.com/tranxuanthang/lrcget — official LRCLIB client)."""
-        headers = {
-            "User-Agent": "SDR-Radio/1.0 (https://github.com/nagesh147/sdr-radio; LRCLIB client inspired by LRCGET)"
-        }
+        headers = {"User-Agent": "SDR-Radio/1.0[](https://github.com/nagesh147/sdr-radio)"}
         queries = [
             ("track+artist", {"track_name": title, "artist_name": artist}),
             ("q=artist+title", {"q": f"{artist} {title}".strip()}),
@@ -1433,15 +1554,11 @@ class App(QMainWindow):
                     continue
                 try:
                     q = urllib.parse.urlencode({k: v for k, v in params.items() if v})
-                    req = urllib.request.Request(
-                        f"https://lrclib.net/api/search?{q}",
-                        headers=headers,
-                    )
+                    req = urllib.request.Request(f"https://lrclib.net/api/search?{q}", headers=headers)
                     with urllib.request.urlopen(req, timeout=12) as resp:
                         results = json.loads(resp.read().decode())
                     if not results:
                         continue
-                    # Prefer results that have synced lyrics (same priority as LRCGET)
                     best = None
                     for r in results:
                         if r.get("syncedLyrics"):
@@ -1466,82 +1583,60 @@ class App(QMainWindow):
                 except Exception as e:
                     self.log(f"LRCLIB {label}: {e}")
                     continue
-            self.log("LRCLIB: no results after all attempts")
             return ""
         except Exception as e:
             self.lrc = []
             self.log(f"LRCLIB error: {e}")
             return ""
 
-    def fetch_gn_meta(self, artist, title):
-        if not self.gn_key: return None
-        try:
-            q = urllib.parse.quote(f"{artist} {title}")
-            req = urllib.request.Request(f"https://api.genius.com/search?q={q}",
-                headers={"Authorization": f"Bearer {self.gn_key}", "User-Agent": "SDR-Radio/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-            hits = (data.get("response") or {}).get("hits") or []
-            if hits: return {"url": hits[0]["result"].get("url", "")}
-        except Exception: return None
-        return None
-
     def open_yt(self):
-        if not self.song: return
+        if not self.song:
+            return
         q = f"{self.song.get('artist','')} {self.song.get('title','')}"
         QDesktopServices.openUrl(QUrl("https://www.youtube.com/results?search_query=" + urllib.parse.quote(q)))
-
-    def open_gn(self):
-        url = self.genius_url
-        if not url and self.song:
-            meta = self.fetch_gn_meta(self.song.get("artist",""), self.song.get("title",""))
-            url = (meta or {}).get("url")
-        if url: QDesktopServices.openUrl(QUrl(url))
 
     def _is_fav(self, song):
         k = (_norm(song.get("title")), _norm(song.get("artist")))
         return any((_norm(s.get("title")), _norm(s.get("artist"))) == k for s in self.favs)
 
     def toggle_fav(self):
-        if not self.song: return
+        if not self.song:
+            return
         k = (_norm(self.song.get("title")), _norm(self.song.get("artist")))
         if self._is_fav(self.song):
             self.favs = [s for s in self.favs if (_norm(s.get("title")), _norm(s.get("artist"))) != k]
-            self.btn_fav.setText("♡")
+            self.btn_fav.setIcon(load_icon("heart"))
             self.toast.show_msg("Removed bookmark")
         else:
             self.favs.insert(0, self.song)
             self.favs = self.favs[:50]
-            self.btn_fav.setText("♥")
+            self.btn_fav.setIcon(load_icon("heart"))
             self.toast.show_msg("Bookmarked")
         save_json(FAV_F, self.favs)
         self.refresh_favs()
-        self._finish_ui_hooks()
 
     def fav_menu(self, pos):
-        from PyQt5.QtWidgets import QMenu
         item = self.fav_list.itemAt(pos)
-        if not item: return
+        if not item:
+            return
         m = QMenu(self)
         m.addAction("Remove", lambda: self._remove_fav_item(item))
         m.exec_(self.fav_list.mapToGlobal(pos))
 
     def _remove_fav_item(self, item):
         s = item.data(Qt.UserRole)
-        if not s: return
+        if not s:
+            return
         k = (_norm(s.get("title")), _norm(s.get("artist")))
         self.favs = [x for x in self.favs if (_norm(x.get("title")), _norm(x.get("artist"))) != k]
         save_json(FAV_F, self.favs)
         self.refresh_favs()
         if self.song and song_match(self.song, s):
-            self.btn_fav.setText("♡")
+            self.btn_fav.setIcon(load_icon("heart"))
         self.toast.show_msg("Removed bookmark")
 
     def refresh_hist(self):
         self.hist.clear()
-        self.hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.hist.setTextElideMode(Qt.ElideRight)
-        self.hist.setSpacing(2)
         for s in self.history:
             artist = s.get("artist") or "?"
             title = s.get("title") or "?"
@@ -1552,41 +1647,32 @@ class App(QMainWindow):
 
     def refresh_favs(self):
         self.fav_list.clear()
-        self.fav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.fav_list.setTextElideMode(Qt.ElideRight)
-        self.fav_list.setSpacing(2)
         for s in self.favs:
             artist = s.get("artist") or "?"
             title = s.get("title") or "?"
             it = QListWidgetItem(f"{title}  ·  {artist}")
-            it.setToolTip(f"{artist} — {title}\nRight-click to remove")
+            it.setToolTip(f"{artist} — {title}")
             it.setData(Qt.UserRole, s)
             self.fav_list.addItem(it)
 
     def open_hist(self, item):
         s = item.data(Qt.UserRole)
         if not s:
-            idx = self.hist.row(item)
-            if 0 <= idx < len(self.history):
-                s = self.history[idx]
-        if not s:
             return
         self.song = s
         self.song_l.setText(f"{s.get('artist')} — {s.get('title')}")
         self.btn_fav.setEnabled(True)
         self.btn_yt.setEnabled(True)
-        self.btn_fav.setText("♥" if self._is_fav(s) else "♡")
 
     def open_fav(self, item):
         s = item.data(Qt.UserRole)
         if s:
             self.song = s
             self.song_l.setText(f"{s.get('artist')} — {s.get('title')}")
-            self.btn_fav.setEnabled(True); self.btn_yt.setEnabled(True)
-            self.btn_fav.setText("♥")
+            self.btn_fav.setEnabled(True)
+            self.btn_yt.setEnabled(True)
 
     def _toggle_lyrics_panel(self):
-        """Open/close lyrics in a fixed-height slot so the player card does not move."""
         show = self.lyrics_toggle.isChecked()
         self.lyrics_toggle.setText(("▾  Lyrics" if show else "▸  Lyrics"))
         LYRICS_H = 168
@@ -1600,7 +1686,6 @@ class App(QMainWindow):
             self.lyrics_panel.setMaximumHeight(0)
 
     def lyrics_now(self):
-        """Force-fetch lyrics for current song (or last identified)."""
         if not self.song:
             self.toast.show_msg("Identify a song first")
             return
@@ -1623,12 +1708,8 @@ class App(QMainWindow):
                         if text:
                             text += "\n\n— Genius"
                 except Exception as e:
-                    self.log(f"Genius lyrics: {e}")
+                    self.log(f"Genius: {e}")
             self.sig.lyrics.emit(text or "No lyrics found.")
-            if text:
-                QTimer.singleShot(0, lambda: self.toast.show_msg("Lyrics loaded"))
-            else:
-                QTimer.singleShot(0, lambda: self.toast.show_msg("No lyrics found"))
         threading.Thread(target=task, daemon=True).start()
 
     def eventFilter(self, obj, ev):
@@ -1702,40 +1783,46 @@ class App(QMainWindow):
         self.stop()
         subprocess.Popen(["sdrpp"])
         self.toast.show_msg("SDR++ launched")
+
     def start_flights(self):
         self.stop()
-        subprocess.run(["sudo","mkdir","-p","/run/readsb"])
-        subprocess.run(["sudo","chmod","777","/run/readsb"])
-        subprocess.run(["sudo","systemctl","restart","readsb"]); time.sleep(1.2)
-        subprocess.Popen(["xdg-open","http://localhost/tar1090/"])
-        self.toast.show_msg("Flights opened in browser")
+        subprocess.run(["sudo", "mkdir", "-p", "/run/readsb"])
+        subprocess.run(["sudo", "chmod", "777", "/run/readsb"])
+        subprocess.run(["sudo", "systemctl", "restart", "readsb"])
+        time.sleep(1.2)
+        subprocess.Popen(["xdg-open", "http://localhost/tar1090/"])
+        self.toast.show_msg("Flights opened")
+
     def start_wx(self):
         self.stop()
         subprocess.Popen(["satdump-ui"])
-        self.toast.show_msg("Weather (SatDump) launched")
+        self.toast.show_msg("Weather launched")
+
     def start_ais(self):
         self.stop()
         threading.Thread(target=lambda: subprocess.Popen(
-            ["AIS-catcher","-d","00000001","-s","1536k","-a","33","-N","8100"],
+            ["AIS-catcher", "-d", "00000001", "-s", "1536k", "-a", "33", "-N", "8100"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), daemon=True).start()
         threading.Thread(target=lambda: (time.sleep(2), subprocess.Popen(
-            ["xdg-open","http://localhost:8100/?lat=17.385&lon=78.4867&zoom=7&tab=map"])), daemon=True).start()
-        self.toast.show_msg("AIS map opening in browser")
+            ["xdg-open", "http://localhost:8100/?lat=17.385&lon=78.4867&zoom=7&tab=map"])), daemon=True).start()
+        self.toast.show_msg("AIS map opening")
+
     def test_dongle(self):
         def task():
-            proc = subprocess.Popen(["timeout","4","rtl_test","-t"],
+            proc = subprocess.Popen(["timeout", "4", "rtl_test", "-t"],
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in proc.stdout:
-                if line.strip(): self.log(line.rstrip())
+                if line.strip():
+                    self.log(line.rstrip())
         threading.Thread(target=task, daemon=True).start()
+
     def free_all(self):
         self.stop()
-        subprocess.run(["sudo","systemctl","stop","readsb"], stderr=subprocess.DEVNULL)
-        subprocess.run(["killall","-9","sdrpp","satdump","satdump-ui","AIS-catcher"], stderr=subprocess.DEVNULL)
+        subprocess.run(["sudo", "systemctl", "stop", "readsb"], stderr=subprocess.DEVNULL)
+        subprocess.run(["killall", "-9", "sdrpp", "satdump", "satdump-ui", "AIS-catcher"], stderr=subprocess.DEVNULL)
         self.toast.show_msg("All SDR processes stopped")
 
     def _apply_startup(self):
-        """Play configured default station, else first India FM station."""
         try:
             su = self.cfg.get("startup") or {}
         except Exception:
@@ -1753,15 +1840,10 @@ class App(QMainWindow):
             if name and hasattr(self, "stations_list"):
                 for i in range(self.stations_list.count()):
                     it = self.stations_list.item(i)
-                    try:
-                        from PyQt5.QtCore import Qt as _Qt
-                        s = it.data(_Qt.UserRole)
-                    except Exception:
-                        s = it.data(0x0100)
+                    s = it.data(Qt.UserRole)
                     if isinstance(s, dict) and s.get("name") == name:
                         self.stations_list.setCurrentRow(i)
                         self.play_item(it)
-                        self.log("Startup → %s" % name)
                         return
             if freq:
                 m = mode or mode_for_freq(float(freq))
@@ -1776,7 +1858,6 @@ class App(QMainWindow):
                 self.mode.setCurrentText(m)
                 self.mode.blockSignals(False)
                 self.play(float(freq), m, name or ("%.1f MHz" % float(freq)))
-                self.log("Startup → %s %.1f" % (name or "", float(freq)))
                 return
             if self.stations:
                 cat0 = next(iter(self.stations))
@@ -1787,13 +1868,13 @@ class App(QMainWindow):
                         self.cats.setCurrentRow(items.index(cat0))
                         self.load_cat(cat0)
                 self.play(float(st0["freq"]), st0.get("mode") or mode_for_freq(st0["freq"]), st0["name"])
-                self.log("Startup fallback → %s" % st0["name"])
         except Exception as e:
             self.log("Startup error: %s" % e)
 
     def closeEvent(self, e):
         self.stop()
-        if self.aio_loop: self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
+        if self.aio_loop:
+            self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
         e.accept()
 
 
@@ -1802,9 +1883,10 @@ def main():
     app.setApplicationName("SDR Radio")
     app.setDesktopFileName("sdr-control")
     app.setStyle("Fusion")
-    w = App(); w.show()
+    w = App()
+    w.show()
     def cleanup():
-        subprocess.run(["killall","-9","rtl_fm","play"], stderr=subprocess.DEVNULL)
+        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
         LOCK.unlink(missing_ok=True)
     app.aboutToQuit.connect(cleanup)
     sys.exit(app.exec_())
