@@ -2310,42 +2310,22 @@ class App(QMainWindow):
                     return
 
                 kind, model = backend
-                # Capture live audio: stream URL preferred, else system monitor (SDR)
-                ffmpeg_cmd = None
-                if url:
-                    ffmpeg_cmd = [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error",
-                        "-reconnect", "1", "-reconnect_streamed", "1",
-                        "-reconnect_delay_max", "5",
-                        "-i", url,
-                        "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
-                    ]
-                else:
-                    # SDR / local audio via PulseAudio monitor
-                    sink = "default"
-                    try:
-                        r = subprocess.run(
-                            ["pactl", "get-default-sink"],
-                            capture_output=True, text=True, timeout=2,
-                        )
-                        if r.returncode == 0 and (r.stdout or "").strip():
-                            sink = (r.stdout or "").strip() + ".monitor"
-                        else:
-                            sink = "default"
-                    except Exception:
-                        sink = "default"
-                    ffmpeg_cmd = [
-                        "ffmpeg", "-hide_banner", "-loglevel", "error",
-                        "-f", "pulse", "-i", sink,
-                        "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
-                    ]
-
                 import shutil
                 if not shutil.which("ffmpeg"):
                     self.sig.cc.emit("ffmpeg required for live CC")
                     return
 
-                self.sig.cc.emit("Listening…")
+                # Capture what is actually playing (Pulse monitor) so captions
+                # stay in sync with speakers — not a second low-latency stream fetch.
+                mon = self._pulse_monitor_source()
+                ffmpeg_cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-f", "pulse", "-i", mon,
+                    "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
+                ]
+                self.sig.log.emit(f"CC: capturing playback monitor “{mon}”")
+                self.sig.cc.emit("Listening… (synced to speakers)")
+
                 proc = subprocess.Popen(
                     ffmpeg_cmd,
                     stdout=subprocess.PIPE,
@@ -2353,6 +2333,35 @@ class App(QMainWindow):
                     bufsize=0,
                 )
                 self._cc_ffmpeg = proc
+
+                # If Pulse capture fails immediately, fall back to stream URL
+                # (captions may lead audio again — last resort only).
+                time.sleep(0.35)
+                if proc.poll() is not None and url:
+                    err = b""
+                    try:
+                        err = (proc.stderr.read() if proc.stderr else b"") or b""
+                    except Exception:
+                        pass
+                    self.sig.log.emit(
+                        f"CC: pulse capture failed ({err.decode('utf-8', 'ignore')[-160:]}); "
+                        "falling back to stream URL"
+                    )
+                    ffmpeg_cmd = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error",
+                        "-reconnect", "1", "-reconnect_streamed", "1",
+                        "-reconnect_delay_max", "5",
+                        "-i", url,
+                        "-ac", "1", "-ar", "16000", "-f", "s16le", "-",
+                    ]
+                    proc = subprocess.Popen(
+                        ffmpeg_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=0,
+                    )
+                    self._cc_ffmpeg = proc
+                    self.sig.cc.emit("Listening… (stream capture fallback)")
 
                 # Continuously drain ffmpeg pipe (large single read() deadlocks when
                 # OS pipe buffer ~64KB fills before 3s of audio is produced).
