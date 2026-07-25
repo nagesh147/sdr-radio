@@ -453,8 +453,23 @@ class App(QMainWindow):
         hl = QLabel("Stations")
         hl.setObjectName("h")
         hdr.addWidget(hl)
+        self.btn_scan = QPushButton()
+        self.btn_scan.setObjectName("icon")
+        self.btn_scan.setFixedSize(28, 28)
+        self.btn_scan.setIcon(load_icon("radio"))
+        self.btn_scan.setIconSize(QSize(15, 15))
+        self.btn_scan.setToolTip("Auto-scan all bands")
+        self.btn_scan.setCursor(Qt.PointingHandCursor)
+        self.btn_scan.clicked.connect(self.start_auto_scan)
+        hdr.addWidget(self.btn_scan)
         hdr.addStretch()
-        self.btn_hide_left = HoverIcon("panel-left", "Hide stations")
+        self.btn_hide_left = QPushButton()
+        self.btn_hide_left.setObjectName("icon")
+        self.btn_hide_left.setFixedSize(28, 28)
+        self.btn_hide_left.setIcon(load_icon("panel-left"))
+        self.btn_hide_left.setIconSize(QSize(15, 15))
+        self.btn_hide_left.setToolTip("Hide stations")
+        self.btn_hide_left.setCursor(Qt.PointingHandCursor)
         self.btn_hide_left.clicked.connect(lambda: self.toggle_left(False))
         hdr.addWidget(self.btn_hide_left)
         left.installEventFilter(self)
@@ -1668,6 +1683,11 @@ class App(QMainWindow):
         if not self.song:
             self.song_l.setText(msg)
         self.log(f"🎵 {msg}")
+        try:
+            if getattr(self, "_scan_busy", False) or str(msg).lower().startswith("scanning"):
+                self.statusBar().showMessage(str(msg))
+        except Exception:
+            pass
 
     def on_result(self, song):
         if song_match(song, self.song):
@@ -1976,11 +1996,11 @@ class App(QMainWindow):
         if left is not None and obj is left:
             if ev.type() == QEvent.Enter:
                 if hasattr(self, "btn_hide_left"):
-                    try: self.btn_hide_left.fade(True)
+                    try: hasattr(self.btn_hide_left, "fade") and self.btn_hide_left.fade(True)
                     except Exception: pass
             elif ev.type() == QEvent.Leave:
                 if hasattr(self, "btn_hide_left"):
-                    self.btn_hide_left.fade(False)
+                    hasattr(self.btn_hide_left, "fade") and self.btn_hide_left.fade(False)
         if right is not None and obj is right:
             icons = ("btn_hide_right", "btn_auto_side", "btn_theme_side")
             if ev.type() == QEvent.Enter:
@@ -2073,6 +2093,178 @@ class App(QMainWindow):
                 if line.strip():
                     self.log(line.rstrip())
         threading.Thread(target=task, daemon=True).start()
+
+
+    def start_auto_scan(self):
+        """Scan all defined bands and add stations to the list."""
+        if getattr(self, "_scan_busy", False):
+            self.toast.show_msg("Scan already running")
+            return
+        self._scan_busy = True
+        self.toast.show_msg("Scanning all bands…")
+        self.log("Auto-scan started (all bands)")
+        try:
+            self.statusBar().showMessage("Scanning…")
+        except Exception:
+            pass
+        try:
+            self.stop()
+        except Exception:
+            pass
+        threading.Thread(target=self._auto_scan_worker, daemon=True).start()
+
+    def _auto_scan_worker(self):
+        import csv, tempfile, os
+        found = []  # list of (freq_mhz, mode, band_name, db)
+        try:
+            has_power = False
+            try:
+                r = subprocess.run(["which", "rtl_power"], capture_output=True, text=True, timeout=2)
+                has_power = r.returncode == 0 and bool(r.stdout.strip())
+            except Exception:
+                pass
+
+            if not has_power:
+                self.sig.log.emit("rtl_power not found – install rtl-sdr")
+                self._scan_busy = False
+                QTimer.singleShot(0, lambda: self.toast.show_msg("Install rtl_power first"))
+                return
+
+            # Scan each band from BANDS
+            for bname, lo, hi, mode in BANDS:
+                if not getattr(self, "_scan_busy", True):
+                    break
+                # Skip very wide or awkward ranges for speed; still cover main ones
+                span = float(hi) - float(lo)
+                if span <= 0:
+                    continue
+                # Bin size: finer for narrow bands, coarser for wide
+                if span <= 2:
+                    bin_hz = "5k"
+                elif span <= 30:
+                    bin_hz = "25k"
+                else:
+                    bin_hz = "100k"
+                # Integration time scales with band width (cap total time)
+                dwell = "2"
+                end_s = "12s" if span > 50 else "8s"
+                tmp = tempfile.mktemp(suffix=".csv")
+                cmd = [
+                    "rtl_power",
+                    "-f", f"{lo}M:{hi}M:{bin_hz}",
+                    "-i", dwell,
+                    "-e", end_s,
+                    tmp,
+                ]
+                self.sig.log.emit(f"Scan {bname}: {' '.join(cmd)}")
+                try:
+                    self.sig.status.emit(f"Scanning {bname} ({lo}–{hi} MHz)…")
+                except Exception:
+                    pass
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                except Exception as e:
+                    self.sig.log.emit(f"Scan {bname} error: {e}")
+                    continue
+
+                rows = []
+                try:
+                    with open(tmp, newline="") as f:
+                        for row in csv.reader(f):
+                            if len(row) < 7:
+                                continue
+                            try:
+                                hz_low = float(row[2])
+                                step = float(row[4])
+                                vals = [float(x) for x in row[6:] if x.strip()]
+                                for i, db in enumerate(vals):
+                                    freq_mhz = (hz_low + i * step) / 1e6
+                                    rows.append((freq_mhz, db))
+                            except Exception:
+                                continue
+                finally:
+                    try:
+                        os.unlink(tmp)
+                    except Exception:
+                        pass
+
+                if not rows:
+                    continue
+                dbs = [r[1] for r in rows]
+                noise = sorted(dbs)[max(0, len(dbs) // 5)]
+                # Higher threshold for noisy wide bands
+                thresh = noise + (10.0 if span > 20 else 7.0)
+                peaks = []
+                rows.sort(key=lambda x: x[0])
+                for i in range(1, len(rows) - 1):
+                    f, db = rows[i]
+                    if db >= thresh and db >= rows[i - 1][1] and db >= rows[i + 1][1]:
+                        peaks.append((f, db))
+                peaks.sort(key=lambda x: -x[1])
+                used = []
+                for f, db in peaks:
+                    fr = round(f, 2) if mode == "am" and f < 30 else round(f, 1)
+                    if any(abs(fr - u) < (0.05 if f < 30 else 0.15) for u in used):
+                        continue
+                    used.append(fr)
+                    found.append((fr, mode, bname, db))
+
+        except Exception as e:
+            self.sig.log.emit(f"Scan error: {e}")
+        finally:
+            self._scan_busy = False
+
+        def apply():
+            if not found:
+                self.toast.show_msg("No stations found")
+                self.log("Auto-scan: no peaks")
+                try:
+                    self.statusBar().showMessage("Scan done: nothing found")
+                except Exception:
+                    pass
+                return
+            cat = "Scanned"
+            existing = set()
+            for items in self.stations.values():
+                for s in items or []:
+                    if isinstance(s, dict):
+                        try:
+                            existing.add(round(float(s.get("freq", 0)), 2))
+                        except Exception:
+                            pass
+            self.stations.setdefault(cat, [])
+            added = 0
+            for fr, mode, bname, db in sorted(found, key=lambda x: x[0]):
+                key = round(float(fr), 2)
+                if key in existing:
+                    continue
+                name = f"{bname} {fr}"
+                self.stations[cat].append({
+                    "name": name,
+                    "freq": float(fr),
+                    "mode": mode,
+                })
+                existing.add(key)
+                added += 1
+            save_json(STATIONS_F, self.stations)
+            cats = [self.cats.item(i).text() for i in range(self.cats.count())]
+            if cat not in cats:
+                self.cats.addItem(cat)
+            for i in range(self.cats.count()):
+                if self.cats.item(i).text() == cat:
+                    self.cats.setCurrentRow(i)
+                    break
+            self.load_cat(cat)
+            self.toast.show_msg(f"Scan done: +{added} stations")
+            self.log(f"Auto-scan: +{added} across all bands")
+            try:
+                self.statusBar().showMessage(f"Scan done: +{added} stations")
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, apply)
 
     def free_all(self):
         self.stop()
