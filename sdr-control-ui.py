@@ -2080,11 +2080,10 @@ class App(QMainWindow):
 
         # Transcript only in right Captions pane (player layout stays fixed)
         if hasattr(self, "cc_view"):
-            stamp = datetime.now().strftime("%H:%M:%S")
             cur = (self.cc_view.toPlainText() or "").strip()
             if cur.startswith("Starting live captions"):
                 self.cc_view.clear()
-            self.cc_view.append(f"[{stamp}]  {t}")
+            self.cc_view.append(t)
             try:
                 self.cc_view.moveCursor(QTextCursor.End)
             except Exception:
