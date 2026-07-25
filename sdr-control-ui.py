@@ -148,43 +148,39 @@ class Toast(QLabel):
 
 
 class FreqScale(QWidget):
-    """Center needle, sparse ticks, cached background for speed."""
     changed = pyqtSignal(float)
     released = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(76)
-        self.setMinimumWidth(260)
+        self.setFixedHeight(72)
+        self.setMinimumWidth(240)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
-        self._min, self._max, self._val = 88.0, 108.0, 91.1
+        self._min, self._max, self._val = 88.0, 108.0, 106.4
         self._drag = False
         self._lx = 0
         self.dark = False
-        self._cache = None
-        self._cache_key = None
 
     def setRange(self, a, b):
         a, b = float(a), float(b)
         if b <= a:
             b = a + 1.0
         self._min, self._max = a, b
-        self._val = min(max(self._val, self._min), self._max)
-        self._cache = None
+        self._val = min(max(self._val, a), b)
         self.update()
 
     def setValue(self, v):
-        nv = min(max(float(v), self._min), self._max)
-        if abs(nv - self._val) < 1e-6:
+        v = min(max(float(v), self._min), self._max)
+        if abs(v - self._val) < 1e-6:
             return
-        self._val = nv
+        self._val = v
         self.update()
 
     def value(self):
         return self._val
 
-    def _window(self):
+    def _vis(self):
         span = max(0.5, self._max - self._min)
         if span <= 5:
             return span
@@ -192,99 +188,91 @@ class FreqScale(QWidget):
             return min(span, 8.0)
         return min(span, 12.0)
 
-    def _build_cache(self, w, h):
-        """Static ticks for current range/value window — redraw only when key changes."""
-        key = (w, h, round(self._min, 3), round(self._max, 3), round(self._val, 1), self.dark)
-        if self._cache is not None and self._cache_key == key:
-            return self._cache
-        pm = QPixmap(w, h)
-        pm.fill(QColor("#2c2c2e") if self.dark else QColor("#f2f2f7"))
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing, False)  # ticks are axis-aligned
-        pad = 16
-        usable = max(1.0, w - 2 * pad)
-        visible = self._window()
-        mpp = visible / usable
-        cx = w / 2.0
-        major = 1.0 if visible <= 20 else 5.0
-        half = visible / 2.0
-        base = h - 24
-        # majors only + mid markers every 0.5
-        f = int((self._val - half) / 0.5) * 0.5
-        end = self._val + half + 0.5
-        while f <= end:
-            if self._min - 1e-9 <= f <= self._max + 1e-9:
-                x = cx + (f - self._val) / mpp
-                if pad <= x <= w - pad:
-                    maj = abs(round(f / major) * major - f) < 1e-4
-                    p.setPen(QColor("#8e8e93") if maj else QColor("#c7c7cc"))
-                    p.drawLine(int(x), base, int(x), 22 if maj else 30)
-                    if maj:
-                        p.setPen(QColor("#f5f5f7") if self.dark else QColor("#3a3a3c"))
-                        p.setFont(QFont("Sans", 8))
-                        lab = f"{f:.0f}" if abs(f - round(f)) < 1e-6 else f"{f:.1f}"
-                        p.drawText(int(x) - 14, h - 16, 28, 12, Qt.AlignCenter, lab)
-            f = round(f + 0.5, 5)
-        p.end()
-        self._cache = pm
-        self._cache_key = key
-        return pm
-
-    def paintEvent(self, _ev):
+    def paintEvent(self, _e):
         w, h = self.width(), self.height()
         if w < 40:
             return
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._build_cache(w, h))
-        # needle + readout only (cheap)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        cx = w / 2.0
-        base = h - 24
+        p.setRenderHint(QPainter.Antialiasing, False)
+        bg = QColor("#2c2c2e") if self.dark else QColor("#f2f2f7")
+        p.fillRect(0, 0, w, h, bg)
+        pad, base = 16, h - 22
+        usable = max(1.0, w - 2 * pad)
+        vis = self._vis()
+        mpp = vis / usable
+        cx = w * 0.5
+        half = vis * 0.5
+        major = 1.0 if vis <= 20 else 5.0
+        f0 = int((self._val - half) * 2) / 2.0
+        f1 = self._val + half + 0.5
+        f = f0
+        pen_maj = QColor("#8e8e93")
+        pen_min = QColor("#c7c7cc")
+        pen_txt = QColor("#f5f5f7") if self.dark else QColor("#3a3a3c")
+        p.setFont(QFont("Sans", 8))
+        while f <= f1:
+            if self._min - 1e-9 <= f <= self._max + 1e-9:
+                x = cx + (f - self._val) / mpp
+                if pad <= x <= w - pad:
+                    maj = abs(round(f / major) * major - f) < 1e-4
+                    p.setPen(pen_maj if maj else pen_min)
+                    p.drawLine(int(x), base, int(x), 20 if maj else 28)
+                    if maj:
+                        p.setPen(pen_txt)
+                        lab = f"{f:.0f}" if abs(f - round(f)) < 1e-6 else f"{f:.1f}"
+                        p.drawText(int(x) - 14, h - 14, 28, 12, Qt.AlignCenter, lab)
+            f = round(f + 0.5, 5)
         p.setPen(QPen(QColor("#30d158"), 2))
-        p.drawLine(int(cx), 10, int(cx), base)
+        p.drawLine(int(cx), 8, int(cx), base)
         p.setBrush(QColor("#30d158"))
         p.setPen(Qt.NoPen)
-        p.drawEllipse(int(cx) - 5, 8, 10, 10)
+        p.drawEllipse(int(cx) - 4, 6, 8, 8)
         p.setPen(QColor("#30d158"))
         p.setFont(QFont("Sans", 10, QFont.Bold))
-        p.drawText(16, 14, f"{self._val:.1f} MHz")
+        p.drawText(14, 14, f"{self._val:.1f} MHz")
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._drag = True
-            self._lx = e.x()
+        if e.button() != Qt.LeftButton:
+            return
+        self._drag = True
+        self._lx = e.pos().x()
+        self.grabMouse()
 
     def mouseMoveEvent(self, e):
         if not self._drag:
             return
-        dx = e.x() - self._lx
-        self._lx = e.x()
+        x = e.pos().x()
+        dx = x - self._lx
+        self._lx = x
         usable = max(1.0, self.width() - 32)
-        mpp = self._window() / usable
-        self._val = min(max(self._val - dx * mpp, self._min), self._max)
-        self._val = round(self._val * 10) / 10.0
-        self._cache = None
+        mpp = self._vis() / usable
+        nv = min(max(self._val - dx * mpp, self._min), self._max)
+        nv = round(nv * 10) / 10.0
+        if abs(nv - self._val) < 1e-9:
+            return
+        self._val = nv
         self.update()
         self.changed.emit(self._val)
 
-    def mouseReleaseEvent(self, _e):
+    def mouseReleaseEvent(self, e):
+        if not self._drag:
+            return
         self._drag = False
         try:
-            self.released.emit(self._val)
+            self.releaseMouse()
         except Exception:
             pass
+        self.released.emit(float(self._val))
 
     def wheelEvent(self, e):
         step = 0.1 if e.angleDelta().y() > 0 else -0.1
-        self._val = min(max(round((self._val + step) * 10) / 10.0, self._min), self._max)
-        self._cache = None
+        nv = min(max(round((self._val + step) * 10) / 10.0, self._min), self._max)
+        if abs(nv - self._val) < 1e-9:
+            return
+        self._val = nv
         self.update()
         self.changed.emit(self._val)
-
-    def resizeEvent(self, e):
-        self._cache = None
-        super().resizeEvent(e)
-
+        self.released.emit(float(self._val))
 
 
 class HoverIcon(QPushButton):
@@ -397,7 +385,7 @@ class App(QMainWindow):
         self.log("Ready")
         self.log("Bands: " + ", ".join(b[0] for b in BANDS))
         if self.cfg.get("song_id"):
-            self.btn_auto.setChecked(True)
+            (hasattr(self, 'btn_auto') and (hasattr(self, 'btn_auto') and (hasattr(self, 'btn_auto') and self.btn_auto.setChecked(True)) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))) or (hasattr(self, 'btn_auto_side') and self.btn_auto_side.setChecked(True))
 
     def _clean_stations(self, data):
         out = {}
@@ -586,7 +574,7 @@ class App(QMainWindow):
         tl.addLayout(tr)
         self.scale = FreqScale()
         self.scale.changed.connect(self.on_scale)
-        self.scale.released.connect(lambda _v: self.commit_tune())
+        self.scale.released.connect(self.on_scale_release)
         tl.addWidget(self.scale)
         self.freq = QDoubleSpinBox()
         self.freq.setDecimals(1); self.freq.setSingleStep(0.1)
@@ -594,7 +582,7 @@ class App(QMainWindow):
         self.freq.setSuffix(" MHz")
         self.freq.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.freq.valueChanged.connect(self.on_freq)
-        self.freq.editingFinished.connect(lambda: self.on_freq(self.freq.value()))
+        self.freq.editingFinished.connect(self.commit_tune)
         tl.addWidget(self.freq)
         ml.addWidget(tun)
 
@@ -713,7 +701,6 @@ class App(QMainWindow):
             self.scale.changed.disconnect()
         except Exception:
             pass
-        self.scale.changed.connect(self.on_scale)
 
 
         # Band: use activated only (fires on user choice every time)
@@ -735,7 +722,6 @@ class App(QMainWindow):
             pass
         self.band.activated.connect(self.on_band)
         self.freq.valueChanged.connect(self.on_freq)
-        self.scale.changed.connect(self.on_scale)
 
 
         # Startup station
@@ -754,8 +740,11 @@ class App(QMainWindow):
             except Exception:
                 pass
 
-        self._wire_band()
         self.statusBar().showMessage("Ready")
+        from PyQt5.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(400, self._apply_startup)
+        from PyQt5.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(400, self._apply_startup)
         QToolTip.setFont(QFont("Sans", 10))
         if self.cats.count(): self.cats.setCurrentRow(0)
         self.on_band("FM")
@@ -786,7 +775,7 @@ class App(QMainWindow):
                 }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
-                QListWidget::item:selected { background: #1b4332; color: #f0fff4; border-radius: 8px; }
+                QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
                 QListWidget::item:hover { background: rgba(0,0,0,0.04); border-radius: 8px; }
                 QComboBox, QDoubleSpinBox {
                     background:#2c2c2e; border:none; border-radius:10px; padding:7px 10px; color:#f5f5f7;
@@ -850,7 +839,7 @@ class App(QMainWindow):
                 }
                 QListWidget { background: transparent; border: none; outline: none; }
                 QListWidget::item { padding:9px 10px; border-radius:10px; }
-                QListWidget::item:selected { background: #b7dfc0; color: #0d1f0d; border-radius: 8px; }
+                QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
                 QListWidget::item:hover { background: rgba(0,0,0,0.04); border-radius: 8px; }
                 QComboBox, QDoubleSpinBox {
                     background:#f2f2f7; border:none; border-radius:10px; padding:7px 10px;
@@ -927,7 +916,7 @@ class App(QMainWindow):
         self._band_lock = True
         try:
             idx = self.band.findText(name)
-            if idx < 0: idx = self.band.findText('All Bands')
+            if idx < 0: idx = self.band.findText("All Bands")
             if idx >= 0 and self.band.currentIndex() != idx:
                 self.band.blockSignals(True)
                 self.band.setCurrentIndex(idx)
@@ -935,32 +924,17 @@ class App(QMainWindow):
         finally:
             self._band_lock = False
 
-    def _wire_band(self):
-        try:
-            self.band.activated.disconnect()
-        except Exception:
-            pass
-        try:
-            self.band.currentTextChanged.disconnect()
-        except Exception:
-            pass
-        self.band.activated.connect(self.on_band)
-        print("[WIRE] band.activated -> on_band", flush=True)
 
     def on_band(self, *args):
-        if getattr(self, '_band_lock', False):
+        if getattr(self, "_band_lock", False):
             return
         name = None
         if args:
             a0 = args[0]
-            try:
-                name = self.band.itemText(int(a0)) if not isinstance(a0, str) else str(a0)
-            except Exception:
-                name = str(a0)
+            name = self.band.itemText(a0) if isinstance(a0, int) else str(a0)
         if not name:
             name = self.band.currentText()
         name = (name or "").strip()
-        print('[BAND]', repr(name), flush=True)
         try:
             self.toast.show_msg("Band: " + name)
         except Exception:
@@ -969,68 +943,39 @@ class App(QMainWindow):
             self.freq.blockSignals(True)
             self.freq.setRange(0.1, 1700.0)
             self.freq.blockSignals(False)
-            try: self.scale.setRange(0.1, 1700.0)
-            except Exception: pass
+            self.scale.setRange(0.1, 1700.0)
             return
         hit = None
-        for n, lo, hi, mode in BANDS:
+        for n, a, b, m in BANDS:
             if n == name:
-                hit = (n, float(lo), float(hi), mode)
-                break
+                hit = (n, float(a), float(b), m); break
         if not hit:
-            print('[BAND] unknown', name, flush=True)
-            return
-        n, lo, hi, mode = hit
-        mid = round(((lo + hi) / 2.0) * 10) / 10.0
+            self.log("Band unknown: " + repr(name)); return
+        n, a, b, m = hit
+        mid = round(((a + b) / 2.0) * 10) / 10.0
         self._band_lock = True
         try:
-            try: self.scale.setRange(lo, hi)
-            except Exception: pass
+            self.scale.setRange(a, b)
             self.freq.blockSignals(True)
-            self.freq.setRange(lo, hi)
+            self.freq.setRange(a, b)
             self.freq.setValue(mid)
             self.freq.blockSignals(False)
-            try: self.scale.setValue(mid)
-            except Exception: pass
+            self.scale.setValue(mid)
             self.mode.blockSignals(True)
-            ix = self.mode.findText(mode)
-            if ix >= 0: self.mode.setCurrentIndex(ix)
-            else: self.mode.setCurrentText(mode)
+            i = self.mode.findText(m)
+            if i >= 0: self.mode.setCurrentIndex(i)
             self.mode.blockSignals(False)
         finally:
             self._band_lock = False
-        self.log("Band → %s: %s MHz %s" % (n, mid, mode))
+        self.log(f"Band → {n}: {mid} MHz [{a}-{b}] {m}")
         try:
-            self.play(mid, mode, "%s %.1f" % (n, mid))
+            self.play(mid, m, f"{n} {mid}")
         except Exception as ex:
             self.log(str(ex))
 
-    def on_freq(self, v):
-        """Spinbox moved — update UI only (no RF restart)."""
-        v = float(v)
-        try:
-            self.scale.blockSignals(True)
-            self.scale.setValue(v)
-            self.scale.blockSignals(False)
-        except Exception:
-            pass
-        m = mode_for_freq(v)
-        if self.mode.currentText() != m:
-            self.mode.blockSignals(True)
-            self.mode.setCurrentText(m)
-            self.mode.blockSignals(False)
-        self._sync_band(v)
-
-    def commit_tune(self):
-        v = float(self.freq.value())
-        m = self.mode.currentText() or mode_for_freq(v)
-        try:
-            self.play(v, m, "%.1f MHz" % v)
-        except Exception as ex:
-            self.log(str(ex))
 
     def on_scale(self, v):
-        """Scale dragged — needle/spinbox only; RF after drag ends."""
+        """Drag: update spinbox/mode only (no audio restart)."""
         v = round(float(v), 1)
         self.freq.blockSignals(True)
         self.freq.setValue(v)
@@ -1040,28 +985,65 @@ class App(QMainWindow):
             self.mode.blockSignals(True)
             self.mode.setCurrentText(m)
             self.mode.blockSignals(False)
-        self._sync_band(v)
-        # short debounce only as fallback if mouseRelease not wired
-        if not hasattr(self, "_tune_timer"):
-            from PyQt5.QtCore import QTimer
-            self._tune_timer = QTimer(self)
-            self._tune_timer.setSingleShot(True)
-            self._tune_timer.timeout.connect(self.commit_tune)
-        self._tune_timer.start(180)
-
-
-    def _retune_from_ui(self):
-        if not getattr(self, "playing", False):
-            return
-        pair = getattr(self, "_pending_tune", None)
-        if not pair:
-            return
-        v, m = pair
         try:
-            self.play(v, m, f"{v:.1f} MHz")
+            self._sync_band(v)
+        except Exception:
+            pass
+
+    def on_scale_release(self, v=None):
+        """Mouse release / wheel: retune radio if playing."""
+        try:
+            v = float(self.freq.value() if v is None else v)
+        except Exception:
+            return
+        m = self.mode.currentText() or mode_for_freq(v)
+        print("[SCALE_RELEASE]", v, m, "playing=", getattr(self, "playing", False), flush=True)
+        if not getattr(self, "playing", False):
+            # still update UI; user can press play
+            self.log("Scale %.1f — press Play to tune" % v)
+            return
+        try:
+            self.play(v, m, "%.1f MHz" % v)
         except Exception as ex:
             self.log(str(ex))
 
+    def on_scale_release(self, v=None):
+        try:
+            v = float(self.freq.value() if v is None else v)
+        except Exception:
+            return
+        m = mode_for_freq(v)
+        if self.mode.currentText() != m:
+            self.mode.blockSignals(True)
+            self.mode.setCurrentText(m)
+            self.mode.blockSignals(False)
+        try:
+            self._sync_band(v)
+        except Exception:
+            pass
+        if not getattr(self, "playing", False):
+            return
+        self.play(v, m, "%.1f MHz" % v, quick=True)
+
+    def commit_tune(self):
+        v = float(self.freq.value())
+        m = self.mode.currentText() or mode_for_freq(v)
+        print("[COMMIT]", v, m, "playing=", getattr(self, "playing", False), flush=True)
+        if not getattr(self, "playing", False):
+            return
+        try:
+            self.play(v, m, "%.1f MHz" % v)
+        except Exception as ex:
+            self.log(str(ex))
+
+    def on_freq(self, v):
+        v = float(v)
+        try:
+            self.scale.blockSignals(True)
+            self.scale.setValue(v)
+            self.scale.blockSignals(False)
+        except Exception:
+            pass
 
     def load_cat(self, cat):
         self.stations_list.blockSignals(True)
@@ -1166,7 +1148,6 @@ class App(QMainWindow):
             save_json(STATIONS_F, self.stations)
 
     def _finish_ui_hooks(self):
-        self._wire_band()
         try: self.band.activated.disconnect()
         except Exception: pass
         try: self.band.currentTextChanged.disconnect()
@@ -1177,7 +1158,6 @@ class App(QMainWindow):
         self.freq.valueChanged.connect(self.on_freq)
         try: self.scale.changed.disconnect()
         except Exception: pass
-        self.scale.changed.connect(self.on_scale)
         self.log("Band items: " + ", ".join(self.band.itemText(i) for i in range(self.band.count())))
         su = self.cfg.get("startup") if isinstance(getattr(self, "cfg", None), dict) else None
         if isinstance(su, dict) and su.get("freq") is not None:
@@ -1205,26 +1185,10 @@ class App(QMainWindow):
 
     def play_item(self, item):
         s = item.data(Qt.UserRole)
-        if not s:
-            return
-        freq = float(s.get("freq", 0))
-        mode = s.get("mode") or mode_for_freq(freq)
-        name = s.get("name") or ("%.1f" % freq)
-        self.freq.blockSignals(True)
-        self.freq.setValue(freq)
-        self.freq.blockSignals(False)
-        try:
-            self.scale.setValue(freq)
-        except Exception:
-            pass
-        self.mode.blockSignals(True)
-        self.mode.setCurrentText(mode)
-        self.mode.blockSignals(False)
-        try:
-            self._sync_band(freq)
-        except Exception:
-            pass
-        self.play(freq, mode, name)
+        if not s: return
+        self.freq.setValue(s["freq"]); self.scale.setValue(s["freq"])
+        self.mode.setCurrentText(s["mode"]); self._sync_band(s["freq"])
+        self.play(s["freq"], s["mode"], s["name"])
 
     def clear_song(self):
         self.song = None; self.genius_url = None
@@ -1242,90 +1206,35 @@ class App(QMainWindow):
             self.btn_play.setText("▶"); self.title.setText("Not playing"); self.sub.setText("Pick a station")
             self.clear_song()
 
-
-    def _kill_audio(self):
-        import subprocess, os, signal
-        proc = getattr(self, "rtl", None)
-        if proc is not None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            try:
-                proc.wait(timeout=0.5)
-            except Exception:
-                pass
-            self.rtl = None
-        subprocess.run(
-            ["killall", "-9", "rtl_fm", "play"],
-            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        )
-
     def stop(self):
-        try:
-            self.stop_id()
-        except Exception:
-            pass
-        self._kill_audio()
-        try:
-            self.set_playing(False)
-        except Exception:
-            self.playing = False
-
+        self.stop_id()
+        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
+        self.rtl = None; self.set_playing(False)
 
     def toggle(self):
         if self.playing: self.stop()
         else: self.play(self.freq.value(), self.mode.currentText(), f"{self.freq.value():.1f} MHz")
 
-    def play(self, freq, mode, name=""):
-        import subprocess, time
-        self._kill_audio()
-        time.sleep(0.25)
-        try:
-            self.stop_id()
-        except Exception:
-            pass
-        try:
-            self.clear_song()
-        except Exception:
-            pass
-        gain = int(self.gain.value()) if hasattr(self, "gain") else 35
-        try:
-            self.cfg["gain"] = gain
-            save_json(CONFIG, self.cfg)
-        except Exception:
-            pass
-        hz = int(round(float(freq) * 1e6))
-        mode = (mode or "wbfm").lower().strip()
-        detail = "%.3f MHz · %s · gain %s" % (float(freq), mode.upper(), gain)
-        self.playing = True
-        try:
-            self.set_playing(True, name or ("%.1f MHz" % float(freq)), detail)
-        except Exception:
-            pass
-        self.log("▶ %s · %s" % (name, detail))
+    def play(self, freq, mode, name="", quick=False):
+        subprocess.run(["killall", "-9", "rtl_fm", "play"], stderr=subprocess.DEVNULL)
+        time.sleep(0.08 if quick else 0.2); self.stop_id(); self.clear_song()
+        gain = int(self.gain.value()); self.cfg["gain"] = gain; save_json(CONFIG, self.cfg)
+        hz = int(round(freq * 1e6))
+        detail = f"{freq:.3f} MHz · {mode.upper()} · gain {gain}"
+        self.set_playing(True, name or f"{freq:.1f} MHz", detail)
+        self.log(f"▶ {name} · {detail}")
         if mode == "wbfm":
-            cmd = "rtl_fm -f %d -M wbfm -g %d -s 170k -A fast -r 32000 -l 0 -E deemp - | play -r 32000 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
+            cmd = f"rtl_fm -f {hz} -M wbfm -g {gain} -s 170k -A fast -r 32000 -l 0 -E deemp - | play -r 32000 -t raw -e signed -b 16 -c 1 -q -"
         elif mode == "am":
-            cmd = "rtl_fm -f %d -M am -g %d -s 12000 -r 12000 -l 0 - | play -r 12000 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
+            cmd = f"rtl_fm -f {hz} -M am -g {gain} -s 12000 -r 12000 -l 0 - | play -r 12000 -t raw -e signed -b 16 -c 1 -q -"
         else:
-            cmd = "rtl_fm -f %d -M fm -g %d -s 22050 -r 22050 -l 0 - | play -r 22050 -t raw -e signed -b 16 -c 1 -" % (hz, gain)
-        self.log("CMD: " + cmd[:100])
-        try:
-            self.rtl = subprocess.Popen(cmd, shell=True, start_new_session=True)
-            self.log("rtl pid %s" % self.rtl.pid)
-        except Exception as e:
-            self.log("play error: " + str(e))
-            self.playing = False
-            return
-        if bool(getattr(self, "cfg", {}).get("song_id", True)):
-            try:
-                self.start_id()
-            except Exception:
-                pass
+            cmd = f"rtl_fm -f {hz} -M fm -g {gain} -s 22050 -r 22050 -l 0 - | play -r 22050 -t raw -e signed -b 16 -c 1 -q -"
+        try: self.rtl = subprocess.Popen(cmd, shell=True)
+        except Exception as e: self.log(str(e)); self.set_playing(False); return
+        if bool(self.cfg.get("song_id", True)): self.start_id()
+        else:
+            threading.Thread(target=lambda: (time.sleep(8), self.playing and self.id_now()), daemon=True).start()
+
 
     def _toggle_auto_side(self):
         on = not bool(self.cfg.get("song_id", True))
@@ -1925,17 +1834,71 @@ class App(QMainWindow):
         subprocess.run(["killall","-9","sdrpp","satdump","satdump-ui","AIS-catcher"], stderr=subprocess.DEVNULL)
         self.toast.show_msg("All SDR processes stopped")
 
+
+    def _apply_startup(self):
+        """Play configured default station, else first India FM station."""
+        try:
+            su = self.cfg.get("startup") or {}
+        except Exception:
+            su = {}
+        cat = su.get("cat")
+        name = su.get("name")
+        freq = su.get("freq")
+        mode = su.get("mode")
+        # Prefer matching stations list UI + play_item path
+        try:
+            if cat and cat in self.stations and hasattr(self, "cats"):
+                items = [self.cats.item(i).text() for i in range(self.cats.count())]
+                if cat in items:
+                    self.cats.setCurrentRow(items.index(cat))
+                    self.load_cat(cat)
+            if name and hasattr(self, "stations_list"):
+                for i in range(self.stations_list.count()):
+                    it = self.stations_list.item(i)
+                    s = it.data(0x0100)  # Qt.UserRole often 256
+                    # fallback: Qt.UserRole
+                    try:
+                        from PyQt5.QtCore import Qt as _Qt
+                        s = it.data(_Qt.UserRole)
+                    except Exception:
+                        pass
+                    if isinstance(s, dict) and s.get("name") == name:
+                        self.stations_list.setCurrentRow(i)
+                        self.play_item(it)
+                        self.log("Startup → %s" % name)
+                        return
+            if freq:
+                m = mode or mode_for_freq(float(freq))
+                self.freq.blockSignals(True)
+                self.freq.setValue(float(freq))
+                self.freq.blockSignals(False)
+                try:
+                    self.scale.setValue(float(freq))
+                except Exception:
+                    pass
+                self.mode.blockSignals(True)
+                self.mode.setCurrentText(m)
+                self.mode.blockSignals(False)
+                self.play(float(freq), m, name or ("%.1f MHz" % float(freq)))
+                self.log("Startup → %s %.1f" % (name or "", float(freq)))
+                return
+            # fallback: first station of first category
+            if self.stations:
+                cat0 = next(iter(self.stations))
+                st0 = self.stations[cat0][0]
+                if hasattr(self, "cats"):
+                    items = [self.cats.item(i).text() for i in range(self.cats.count())]
+                    if cat0 in items:
+                        self.cats.setCurrentRow(items.index(cat0))
+                        self.load_cat(cat0)
+                self.play(float(st0["freq"]), st0.get("mode") or mode_for_freq(st0["freq"]), st0["name"])
+                self.log("Startup fallback → %s" % st0["name"])
+        except Exception as e:
+            self.log("Startup error: %s" % e)
+
     def closeEvent(self, e):
-        try:
-            self.stop_id()
-        except Exception:
-            pass
-        self._kill_audio()
-        try:
-            if getattr(self, "aio_loop", None):
-                self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
-        except Exception:
-            pass
+        self.stop()
+        if self.aio_loop: self.aio_loop.call_soon_threadsafe(self.aio_loop.stop)
         e.accept()
 
 
@@ -1946,8 +1909,7 @@ def main():
     app.setStyle("Fusion")
     w = App(); w.show()
     def cleanup():
-        subprocess.run(["killall", "-9", "rtl_fm", "play", "aplay", "paplay"],
-                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        subprocess.run(["killall","-9","rtl_fm","play"], stderr=subprocess.DEVNULL)
         LOCK.unlink(missing_ok=True)
     app.aboutToQuit.connect(cleanup)
     sys.exit(app.exec_())
