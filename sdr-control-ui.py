@@ -1925,20 +1925,11 @@ class App(QMainWindow):
             return False
 
     def _ensure_station_art(self, name: str, favicon: str | None = None) -> str | None:
-        """Return local art path, downloading from favicon / known logos if needed."""
+        """Internet-only: local logo path, downloading from favicon / known logos if needed.
+        SDR/RF stations do not use station album art."""
         existing = self._station_art_path(name)
         if existing and Path(existing).name != "default.png":
             return existing
-        # Reuse close local matches (e.g. Radio Mirchi for Mirchi Online)
-        base = ART / "stations"
-        for alt in (
-            re.sub(r"\s+Online$", "", name or "", flags=re.I).strip(),
-            re.sub(r"\s+Radio$", "", name or "", flags=re.I).strip(),
-        ):
-            if alt and alt != name:
-                p = self._station_art_path(alt)
-                if p and Path(p).name != "default.png":
-                    return p
         slug = self._station_art_slug(name)
         dest = ART / "stations" / f"{slug}.png"
         urls = []
@@ -1950,7 +1941,7 @@ class App(QMainWindow):
         for u in urls:
             if self._download_image(u, dest):
                 return str(dest)
-        # Last resort: iTunes radio/logo search
+        # Last resort: iTunes radio/logo search (internet stations only)
         try:
             q = urllib.parse.quote(f"{name} radio")
             req = urllib.request.Request(
@@ -1970,23 +1961,27 @@ class App(QMainWindow):
         return existing
 
     def _show_station_art(self, name="", favicon=None):
+        """Show art for internet streams only (not SDR/RF stations)."""
         path = self._ensure_station_art(name, favicon=favicon)
-        if path:
+        if path and Path(path).name != "default.png":
             self.show_art(path)
-        else:
-            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
-            if art is not None:
-                art.setPixmap(QPixmap())
-                art.setText("♪")
+            return
+        art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+        if art is not None:
+            art.setPixmap(QPixmap())
+            art.setText("♪")
+        self._art_path = None
 
     def _prefetch_internet_arts(self):
-        """Background: cache album art for all local Internet stations."""
+        """Background: cache logos only for Internet (url) stations — never SDR/RF."""
         def work():
             names_urls = []
             for cat, items in (self.stations or {}).items():
                 for s in items or []:
                     if isinstance(s, dict) and s.get("url") and s.get("name"):
-                        names_urls.append((s["name"], s.get("favicon") or INTERNET_STATION_ART.get(s["name"])))
+                        names_urls.append(
+                            (s["name"], s.get("favicon") or INTERNET_STATION_ART.get(s["name"]))
+                        )
             for name, fav in INTERNET_STATION_ART.items():
                 names_urls.append((name, fav))
             seen = set()
@@ -1999,7 +1994,7 @@ class App(QMainWindow):
                 path = self._ensure_station_art(name, favicon=fav)
                 if path and Path(path).name != "default.png":
                     ok += 1
-            self.sig.log.emit(f"Station art: {ok}/{len(seen)} internet logos cached")
+            self.sig.log.emit(f"Internet art: {ok}/{len(seen)} logos cached")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2384,8 +2379,13 @@ class App(QMainWindow):
         self.log(f"▶ {name} · {detail}")
         self._current_station = name or f"{freq:.1f} MHz"
         self._stream_url = None
+        # No station logos for SDR/RF — only internet streams use album/station art
         try:
-            self._show_station_art(name)
+            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+            if art is not None:
+                art.setPixmap(QPixmap())
+                art.setText("♪")
+            self._art_path = None
         except Exception:
             pass
         if getattr(self, "_cc_on", False):
