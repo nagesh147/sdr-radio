@@ -2490,6 +2490,56 @@ class App(QMainWindow):
 
         threading.Thread(target=work, daemon=True, name="sdr-live-cc").start()
 
+    def _pulse_monitor_source(self) -> str:
+        """Return Pulse/PipeWire source that monitors what you hear (keeps CC in sync)."""
+        # Prefer a monitor that is currently RUNNING (active playback)
+        try:
+            r = subprocess.run(
+                ["pactl", "list", "short", "sources"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r.returncode == 0:
+                running = []
+                suspended = []
+                for line in (r.stdout or "").splitlines():
+                    parts = line.split()
+                    if len(parts) < 2 or ".monitor" not in parts[1]:
+                        continue
+                    name = parts[1]
+                    state = parts[-1].upper() if parts else ""
+                    if "RUNNING" in state:
+                        running.append(name)
+                    else:
+                        suspended.append(name)
+                if running:
+                    return running[0]
+                if suspended:
+                    # Prefer default sink monitor if listed
+                    try:
+                        d = subprocess.run(
+                            ["pactl", "get-default-sink"],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        sink = (d.stdout or "").strip()
+                        mon = sink + ".monitor" if sink else ""
+                        if mon and mon in suspended:
+                            return mon
+                    except Exception:
+                        pass
+                    return suspended[0]
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["pactl", "get-default-sink"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if r.returncode == 0 and (r.stdout or "").strip():
+                return (r.stdout or "").strip() + ".monitor"
+        except Exception:
+            pass
+        return "default.monitor"
+
     def _start_icy(self, url: str):
         """Optional: also watch ICY StreamTitle (metadata), not speech."""
         self._stop_icy()
