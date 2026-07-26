@@ -566,7 +566,7 @@ class StationRow(QWidget):
         self.label = QLabel(self._text)
         self.label.setObjectName("stationText")
         self.label.setAutoFillBackground(False)
-        self.label.setMinimumWidth(0)
+        self.label.setMinimumWidth(self._text_width())
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.label.setTextInteractionFlags(Qt.NoTextInteraction)
         row.addWidget(self.label, 1)
@@ -587,7 +587,16 @@ class StationRow(QWidget):
         self._heart_anim.setDuration(130)
         self._heart_anim.setEasingCurve(QEasingCurve.OutCubic)
         row.addWidget(self.heart)
+        self.setMinimumWidth(self.required_width())
         self._sync()
+
+    def _text_width(self):
+        fm = QFontMetrics(self.label.font())
+        return fm.horizontalAdvance(self._text) + fm.horizontalAdvance("MM")
+
+    def required_width(self):
+        margins = self.layout().contentsMargins()
+        return self._text_width() + margins.left() + margins.right() + self.layout().spacing() + self.heart.width()
 
     def _sync(self):
         self.heart.setChecked(self._favored)
@@ -630,8 +639,9 @@ class StationRow(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        fm = QFontMetrics(self.label.font())
-        self.label.setText(fm.elidedText(self._text, Qt.ElideRight, max(20, self.label.width())))
+        self.label.setMinimumWidth(self._text_width())
+        if self.label.text() != self._text:
+            self.label.setText(self._text)
 
 
 class LibraryRow(QWidget):
@@ -676,27 +686,6 @@ class LibraryRow(QWidget):
         super().resizeEvent(e)
         fm = QFontMetrics(self.label.font())
         self.label.setText(fm.elidedText(self._text, Qt.ElideRight, max(20, self.label.width())))
-
-
-class BandGroupRow(QWidget):
-    def __init__(self, opened=False, parent=None):
-        super().__init__(parent)
-        self.setObjectName("bandGroupRow")
-        self.setFixedHeight(30)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addStretch(1)
-        self.icon = QLabel()
-        self.icon.setObjectName("bandGroupIcon")
-        self.icon.setAlignment(Qt.AlignCenter)
-        self.icon.setFixedSize(24, 24)
-        lay.addWidget(self.icon)
-        lay.addStretch(1)
-        self.setOpen(opened)
-
-    def setOpen(self, opened):
-        self.icon.setText("⌄" if opened else "›")
 
 
 class Collapse(QWidget):
@@ -784,6 +773,11 @@ class App(QMainWindow):
         self.lrc = []
         self.lrc_t0 = None
         self._band_lock = False
+        self._ui_ready = False
+        self._restoring_layout = False
+        self._prefs_save_timer = QTimer(self)
+        self._prefs_save_timer.setSingleShot(True)
+        self._prefs_save_timer.timeout.connect(self._save_prefs)
 
         self.sig = Sig()
         self.sig.log.connect(self._on_log)
@@ -803,9 +797,10 @@ class App(QMainWindow):
             "section_sort": "Pinned first",
             "collapsed_cats": [] # Categories that are collapsed
         })
-        self._band_group_open = False
         self.history = load_json(HIST_F, [])
         self.favs = load_json(FAV_F, [])
+        self.history = self._dedupe_songs(self.history, limit=100)
+        self.favs = self._dedupe_songs(self.favs, limit=50)
         self._view_items_by_cat = {}
         self._visible_station_cat = ""
         self._special_net_refreshed = set()
@@ -848,6 +843,7 @@ class App(QMainWindow):
         self._ui()
         self._style()
         self._bind_shortcuts()
+        self._ui_ready = True
         self.log("Ready")
         try:
             miss = (self._ready_report or {}).get("missing_required") or []
@@ -1116,27 +1112,11 @@ class App(QMainWindow):
             text = item_or_text.text()
         else:
             text = str(item_or_text)
-        text = re.sub(r"^[⌄›▾▸\s]+", "", str(text)).strip()
+        text = str(text).strip()
         return text
 
-    def _band_group_cats(self):
-        return ("Airband", "Amateur", "Marine", "Shortwave")
-
-    def _band_group_is_open(self):
-        return bool(getattr(self, "_band_group_open", False)) or getattr(self, "_current_station_cat", "") in self._band_group_cats()
-
-    def _add_band_group_item(self):
-        item = QListWidgetItem()
-        item.setData(Qt.UserRole, {"group": "sdr_bands"})
-        item.setToolTip("Airband, Amateur, Marine, Shortwave")
-        item.setFlags(Qt.ItemIsEnabled)
-        item.setSizeHint(QSize(0, 30))
-        self.cats.addItem(item)
-        self.cats.setItemWidget(item, BandGroupRow(self._band_group_is_open()))
-
     def _add_category_item(self, cat):
-        in_group = cat in self._band_group_cats()
-        item = QListWidgetItem(("  " if in_group else "") + str(cat))
+        item = QListWidgetItem(str(cat))
         item.setData(Qt.UserRole, {"cat": cat})
         item.setToolTip(f"{cat} section")
         self.cats.addItem(item)
@@ -1157,24 +1137,10 @@ class App(QMainWindow):
     def _populate_categories(self, categories=None):
         categories = self._category_order(categories if categories is not None else self.stations.keys())
         cur = self._cat_name_from_item(self.cats.currentItem()) if hasattr(self, "cats") else ""
-        band_cats = [c for c in self._band_group_cats() if c in categories]
-        visible_categories = [c for c in categories if c not in self._band_group_cats()]
         self.cats.blockSignals(True)
         self.cats.clear()
-        inserted_group = False
-        for cat in visible_categories:
+        for cat in categories:
             self._add_category_item(cat)
-            if cat == "India SDR FM" and band_cats:
-                self._add_band_group_item()
-                inserted_group = True
-                if self._band_group_is_open():
-                    for band_cat in band_cats:
-                        self._add_category_item(band_cat)
-        if band_cats and not inserted_group:
-            self._add_band_group_item()
-            if self._band_group_is_open():
-                for band_cat in band_cats:
-                    self._add_category_item(band_cat)
         self.cats.blockSignals(False)
         visible_names = [self._cat_name_from_item(self.cats.item(i)) for i in range(self.cats.count())]
         if cur and cur in visible_names:
@@ -1218,43 +1184,51 @@ class App(QMainWindow):
         active_cat = getattr(self, "_current_station_cat", "")
         for i in range(self.cats.count()):
             item = self.cats.item(i)
-            data = item.data(Qt.UserRole)
-            if isinstance(data, dict) and data.get("group") == "sdr_bands":
-                item.setToolTip("Airband, Amateur, Marine, Shortwave")
-                row = self.cats.itemWidget(item)
-                if isinstance(row, BandGroupRow):
-                    row.setOpen(self._band_group_is_open())
-            else:
-                cat = self._cat_name_from_item(item)
-                item.setText(("  " if cat in self._band_group_cats() else "") + cat)
-                item.setToolTip(f"{cat} section")
-                active = cat == active_cat
-                item.setForeground(QColor("#30d158") if active else QColor("#f5f5f7" if self.dark else "#1d1d1f"))
-                item.setBackground(QColor(48, 209, 88, 32) if active else QColor(0, 0, 0, 0))
-                font = item.font()
-                font.setBold(False)
-                item.setFont(font)
+            cat = self._cat_name_from_item(item)
+            item.setText(cat)
+            item.setToolTip(f"{cat} section")
+            active = cat == active_cat
+            item.setForeground(QColor("#30d158") if active else QColor("#f5f5f7" if self.dark else "#1d1d1f"))
+            item.setBackground(QColor(48, 209, 88, 32) if active else QColor(0, 0, 0, 0))
+            font = item.font()
+            font.setBold(False)
+            item.setFont(font)
+
+    def _station_row_required_width(self, text):
+        fm = QFontMetrics(self.stations_list.font())
+        padding = fm.horizontalAdvance("MM")
+        return fm.horizontalAdvance(str(text)) + padding + 10 + 5 + 6 + 26 + 8
+
+    def _fit_station_list_width(self, texts):
+        if not texts or not hasattr(self, "left_lists_split"):
+            return
+        required = max(self._station_row_required_width(t) for t in texts)
+        required = max(120, required)
+        cat_width = self.cats.width() if hasattr(self, "cats") and self.cats.width() > 0 else 112
+        cat_width = max(self.cats.minimumWidth(), min(self.cats.maximumWidth(), cat_width))
+        handle = self.left_lists_split.handleWidth()
+        panel_margins = 24
+        panel_width = max(320, cat_width + required + handle + panel_margins)
+        self.stations_list.setMinimumWidth(required)
+        if hasattr(self, "left_panel"):
+            self.left_panel.setMinimumWidth(panel_width)
+        self.left_lists_split.setSizes([cat_width, required])
+        if hasattr(self, "split"):
+            sizes = self.split.sizes()
+            if sizes:
+                total = sum(sizes)
+                left_width = max(panel_width, sizes[0])
+                if total > left_width:
+                    sizes[0] = left_width
+                    self.split.setSizes(sizes)
 
     def _on_category_clicked(self, item):
-        data = item.data(Qt.UserRole)
-        if isinstance(data, dict) and data.get("group") == "sdr_bands":
-            self._band_group_open = not self._band_group_is_open()
-            self._populate_categories()
-            self.stations_list.clear()
-            self.statusBar().showMessage("Expanded" if self._band_group_is_open() else "Collapsed")
-            return
         cat = self._cat_name_from_item(item)
         if not cat:
             return
         self.load_cat(cat)
 
     def _on_category_current_changed(self, _text):
-        item = self.cats.currentItem()
-        data = item.data(Qt.UserRole) if item else None
-        if isinstance(data, dict) and data.get("group") == "sdr_bands":
-            self.stations_list.clear()
-            self._refresh_category_visuals()
-            return
         cat = self._current_cat_name()
         if not cat:
             return
@@ -1271,12 +1245,14 @@ class App(QMainWindow):
         self.toast = Toast(c)
 
         self.split = QSplitter(Qt.Horizontal)
-        self.split.setHandleWidth(6)
+        self.split.setHandleWidth(3)
         self.split.setChildrenCollapsible(True)
+        self.split.splitterMoved.connect(lambda *_: self._schedule_save_prefs())
         root.addWidget(self.split, 1)
 
         # Left
         left = QFrame()
+        self.left_panel = left
         left.setObjectName("card")
         left.setMinimumWidth(320)
         ll = QVBoxLayout(left)
@@ -1313,18 +1289,25 @@ class App(QMainWindow):
         left.installEventFilter(self)
         ll.addLayout(hdr)
 
-        row = QHBoxLayout()
+        self.left_lists_split = QSplitter(Qt.Horizontal)
+        self.left_lists_split.setObjectName("leftListsSplit")
+        self.left_lists_split.setHandleWidth(3)
+        self.left_lists_split.setChildrenCollapsible(False)
+        self.left_lists_split.splitterMoved.connect(lambda *_: self._schedule_save_prefs())
         self.cats = QListWidget()
         self.cats.setObjectName("cats")
-        self.cats.setFixedWidth(104)
+        self.cats.setMinimumWidth(86)
+        self.cats.setMaximumWidth(220)
         self.cats.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.cats.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.cats.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cats.currentTextChanged.connect(self._on_category_current_changed)
         self.cats.itemClicked.connect(self._on_category_clicked)
-        row.addWidget(self.cats)
+        self.left_lists_split.addWidget(self.cats)
         self.stations_list = QListWidget()
+        self.stations_list.setMinimumWidth(120)
         self.stations_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.stations_list.setTextElideMode(Qt.ElideRight)
+        self.stations_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stations_list.setTextElideMode(Qt.ElideNone)
         self.stations_list.setMouseTracking(True)
         self.stations_list.itemClicked.connect(self.play_item)
         self.stations_list.setDragEnabled(True)
@@ -1335,8 +1318,11 @@ class App(QMainWindow):
         self.stations_list.model().rowsMoved.connect(self._stations_reordered)
         self.stations_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.stations_list.customContextMenuRequested.connect(self.stations_menu)
-        row.addWidget(self.stations_list, 1)
-        ll.addLayout(row, 1)
+        self.left_lists_split.addWidget(self.stations_list)
+        self.left_lists_split.setStretchFactor(0, 0)
+        self.left_lists_split.setStretchFactor(1, 1)
+        self.left_lists_split.setSizes([112, 220])
+        ll.addWidget(self.left_lists_split, 1)
         self._populate_categories()
         self.split.addWidget(left)
 
@@ -1624,13 +1610,19 @@ class App(QMainWindow):
         lib_l = QVBoxLayout(lib_w)
         lib_l.setContentsMargins(0, 4, 0, 0)
         lib_tabs = QTabWidget()
+        lib_tabs.setObjectName("libraryTabs")
+        lib_tabs.setDocumentMode(True)
         self.hist = QListWidget()
+        self.hist.setObjectName("libraryList")
         self.hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.hist.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.hist.setMouseTracking(True)
         self.hist.itemDoubleClicked.connect(self.open_hist)
         lib_tabs.addTab(self.hist, "History")
         self.fav_list = QListWidget()
+        self.fav_list.setObjectName("libraryList")
         self.fav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.fav_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.fav_list.setMouseTracking(True)
         self.fav_list.itemDoubleClicked.connect(self.open_fav)
         self.fav_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1826,8 +1818,10 @@ class App(QMainWindow):
                 pass
 
         self.statusBar().showMessage("Ready")
+        QTimer.singleShot(0, self._restore_window_geometry)
         QTimer.singleShot(400, self._apply_startup)
         QTimer.singleShot(500, self._restore_right_panel)
+        QTimer.singleShot(900, self._restore_saved_layout)
         QToolTip.setFont(QFont("Sans", 10))
         if self.cats.count():
             self.cats.setCurrentRow(0)
@@ -1863,11 +1857,9 @@ class App(QMainWindow):
                 QWidget#stationRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
                 QWidget#stationRow[hovered="true"] { background:rgba(48,209,88,0.12); border-left:2px solid rgba(48,209,88,0.75); }
                 QWidget#stationRow[playing="true"] { background:rgba(48,209,88,0.14); border-left:2px solid #30d158; }
-                QWidget#libraryRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
-                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.12); border-left:2px solid rgba(48,209,88,0.75); }
+                QWidget#libraryRow { background:transparent; border:none; border-radius:7px; }
+                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.12); border:none; }
                 QLabel#stationText { background:transparent; border:none; padding:0; }
-                QWidget#bandGroupRow { background:transparent; }
-                QLabel#bandGroupIcon { background:transparent; color:#f5f5f7; font-size:20px; font-weight:700; }
                 QPushButton#navBtn {
                     background: transparent;
                     border: none;
@@ -1893,9 +1885,14 @@ class App(QMainWindow):
                 QListWidget#cats::item:selected { background: rgba(48,209,88,0.16); color:#30d158; }
                 QListWidget#cats::item:hover { background: rgba(255,255,255,0.035); border-radius:8px; }
                 QListWidget#cats::item { font-weight:600; }
+                QTabWidget#libraryTabs::pane { border:0; top:0; }
+                QTabWidget#libraryTabs QTabBar::tab { border:0; background:transparent; padding:7px 10px; }
+                QListWidget#libraryList, QListWidget#libraryList::viewport { border:0; background:transparent; }
+                QListWidget#libraryList::item { border:0; padding:0; margin:1px 0; background:transparent; }
+                QListWidget#libraryList::item:selected, QListWidget#libraryList::item:hover { border:0; background:transparent; }
                 QComboBox, QDoubleSpinBox { background:#1c1c1e; border:1px solid #2c2c2e; border-radius:8px; padding:7px 10px; color:#f5f5f7; }
                 QTextEdit { background:#2c2c2e; border:none; border-radius:12px; color:#f5f5f7; }
-                QSplitter::handle { background:#2c2c2e; width:4px; border-radius:2px; }
+                QSplitter::handle { background:#2c2c2e; width:2px; border-radius:1px; }
                 QTabBar::tab { color:#8e8e93; padding:8px 12px; }
                 QTabBar::tab:selected { color:#f5f5f7; }
                 QStatusBar { color:#8e8e93; background:#000; }
@@ -1930,11 +1927,9 @@ class App(QMainWindow):
                 QWidget#stationRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
                 QWidget#stationRow[hovered="true"] { background:rgba(48,209,88,0.16); border-left:2px solid rgba(48,209,88,0.75); }
                 QWidget#stationRow[playing="true"] { background:rgba(48,209,88,0.18); border-left:2px solid #30d158; }
-                QWidget#libraryRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
-                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.16); border-left:2px solid rgba(48,209,88,0.75); }
+                QWidget#libraryRow { background:transparent; border:none; border-radius:7px; }
+                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.16); border:none; }
                 QLabel#stationText { background:transparent; border:none; padding:0; }
-                QWidget#bandGroupRow { background:transparent; }
-                QLabel#bandGroupIcon { background:transparent; color:#1d1d1f; font-size:20px; font-weight:700; }
                 QPushButton#navBtn {
                     background: transparent;
                     border: none;
@@ -1960,9 +1955,14 @@ class App(QMainWindow):
                 QListWidget#cats::item:selected { background: rgba(48,209,88,0.18); color:#0b7f2a; }
                 QListWidget#cats::item:hover { background: rgba(0,0,0,0.03); border-radius:8px; }
                 QListWidget#cats::item { font-weight:600; }
+                QTabWidget#libraryTabs::pane { border:0; top:0; }
+                QTabWidget#libraryTabs QTabBar::tab { border:0; background:transparent; padding:7px 10px; }
+                QListWidget#libraryList, QListWidget#libraryList::viewport { border:0; background:transparent; }
+                QListWidget#libraryList::item { border:0; padding:0; margin:1px 0; background:transparent; }
+                QListWidget#libraryList::item:selected, QListWidget#libraryList::item:hover { border:0; background:transparent; }
                 QComboBox, QDoubleSpinBox { background:#fff; border:1px solid #e5e5ea; border-radius:8px; padding:7px 10px; }
                 QTextEdit { background:#f2f2f7; border:none; border-radius:12px; }
-                QSplitter::handle { background:#e5e5ea; width:4px; border-radius:2px; }
+                QSplitter::handle { background:#e5e5ea; width:2px; border-radius:1px; }
                 QTabBar::tab { color:#6e6e73; padding:8px 12px; }
                 QTabBar::tab:selected { color:#1d1d1f; }
                 QStatusBar { color:#6e6e73; background:#f5f5f7; }
@@ -1984,6 +1984,11 @@ class App(QMainWindow):
         super().resizeEvent(e)
         if self.toast.isVisible():
             self.toast.show_msg(self.toast.text(), 1000)
+        self._schedule_save_prefs()
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        self._schedule_save_prefs()
 
     def log(self, m):
         line = f"{datetime.now().strftime('%H:%M:%S')}  {m}"
@@ -2233,6 +2238,7 @@ class App(QMainWindow):
             else:
                 others.append((idx, s))
 
+        visible_texts = []
         for _, s in sorted(favs, key=sort_key) + sorted(others, key=sort_key):
             name = str(s.get("name", "?"))
             if s.get("url"):
@@ -2252,6 +2258,7 @@ class App(QMainWindow):
                 it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Favorite")
             if playing:
                 it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Now playing")
+            visible_texts.append(text)
             self.stations_list.addItem(it)
             row = StationRow(
                 text,
@@ -2260,8 +2267,9 @@ class App(QMainWindow):
                 on_toggle=lambda st=s, c=cat: self._toggle_station_favorite_from_row(c, st),
                 on_play=lambda st=s, c=cat: self._play_station_data(st, c),
             )
-            it.setSizeHint(QSize(0, 36))
+            it.setSizeHint(QSize(row.required_width(), 36))
             self.stations_list.setItemWidget(it, row)
+        self._fit_station_list_width(visible_texts)
         
         if clear:
             self.stations_list.blockSignals(False)
@@ -2711,8 +2719,6 @@ class App(QMainWindow):
             return
         self._current_station_cat = cat or self._current_cat_name()
         self._current_station_key = self._station_identity(self._current_station_cat, s)
-        if self._current_station_cat in self._band_group_cats():
-            self._populate_categories()
         self._refresh_category_visuals()
         self._refresh_station_row_visuals()
         # Internet stream
@@ -4083,8 +4089,7 @@ class App(QMainWindow):
             self.sp_fav.setIcon(load_icon("heart"))
         self.log(f"♪ {text}")
         self.toast.show_msg(f"♪  {text}")
-        self.history.insert(0, song)
-        self.history = self.history[:100]
+        self.history = self._dedupe_songs([song] + self.history, limit=100)
         save_json(HIST_F, self.history)
         self.refresh_hist()
         threading.Thread(target=self._post, args=(song,), daemon=True).start()
@@ -4253,23 +4258,42 @@ class App(QMainWindow):
         q = f"{self.song.get('artist','')} {self.song.get('title','')}"
         QDesktopServices.openUrl(QUrl("https://www.youtube.com/results?search_query=" + urllib.parse.quote(q)))
 
+    def _song_key(self, song):
+        return (_norm((song or {}).get("title")), _norm((song or {}).get("artist")))
+
+    def _dedupe_songs(self, songs, limit=None):
+        out = []
+        seen = set()
+        for song in songs or []:
+            if not isinstance(song, dict):
+                continue
+            key = self._song_key(song)
+            if not key[0] and not key[1]:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(song)
+            if limit and len(out) >= limit:
+                break
+        return out
+
     def _is_fav(self, song):
-        k = (_norm(song.get("title")), _norm(song.get("artist")))
-        return any((_norm(s.get("title")), _norm(s.get("artist"))) == k for s in self.favs)
+        k = self._song_key(song)
+        return any(self._song_key(s) == k for s in self.favs)
 
     def toggle_fav(self):
         if not self.song:
             return
-        k = (_norm(self.song.get("title")), _norm(self.song.get("artist")))
+        k = self._song_key(self.song)
         if self._is_fav(self.song):
-            self.favs = [s for s in self.favs if (_norm(s.get("title")), _norm(s.get("artist"))) != k]
+            self.favs = [s for s in self.favs if self._song_key(s) != k]
             self.btn_fav.setChecked(False)
             if hasattr(self, "sp_fav"):
                 self.sp_fav.setChecked(False)
             self.toast.show_msg("Removed like")
         else:
-            self.favs.insert(0, self.song)
-            self.favs = self.favs[:50]
+            self.favs = self._dedupe_songs([self.song] + self.favs, limit=50)
             self.btn_fav.setChecked(True)
             if hasattr(self, "sp_fav"):
                 self.sp_fav.setChecked(True)
@@ -4289,8 +4313,8 @@ class App(QMainWindow):
         s = item.data(Qt.UserRole)
         if not s:
             return
-        k = (_norm(s.get("title")), _norm(s.get("artist")))
-        self.favs = [x for x in self.favs if (_norm(x.get("title")), _norm(x.get("artist"))) != k]
+        k = self._song_key(s)
+        self.favs = [x for x in self.favs if self._song_key(x) != k]
         save_json(FAV_F, self.favs)
         self.refresh_favs()
         if self.song and song_match(self.song, s):
@@ -4298,6 +4322,10 @@ class App(QMainWindow):
         self.toast.show_msg("Removed like")
 
     def refresh_hist(self):
+        clean = self._dedupe_songs(self.history, limit=100)
+        if clean != self.history:
+            self.history = clean
+            save_json(HIST_F, self.history)
         self.hist.clear()
         for s in self.history:
             artist = s.get("artist") or "?"
@@ -4312,6 +4340,10 @@ class App(QMainWindow):
             self.hist.setItemWidget(it, row)
 
     def refresh_favs(self):
+        clean = self._dedupe_songs(self.favs, limit=50)
+        if clean != self.favs:
+            self.favs = clean
+            save_json(FAV_F, self.favs)
         self.fav_list.clear()
         for s in self.favs:
             artist = s.get("artist") or "?"
@@ -4597,6 +4629,7 @@ class App(QMainWindow):
         if hasattr(self, "btn_hide_left"):
             self.btn_hide_left.setVisible(bool(on))
         self._redistribute()
+        self._schedule_save_prefs(100)
 
     def toggle_right(self, on=None):
         right = self.split.widget(2)
@@ -4610,6 +4643,7 @@ class App(QMainWindow):
         if hasattr(self, "btn_hide_right"):
             self.btn_hide_right.setVisible(bool(on))
         self._redistribute()
+        self._schedule_save_prefs(100)
 
     def _redistribute(self):
         try:
@@ -5227,6 +5261,50 @@ class App(QMainWindow):
         self._right_expanded = bool(p.get("right_expanded", True))
         self._right_visible = bool(p.get("right_visible", True))
 
+    def _schedule_save_prefs(self, delay=450):
+        if not getattr(self, "_ui_ready", False) or getattr(self, "_restoring_layout", False):
+            return
+        try:
+            self._prefs_save_timer.start(int(delay))
+        except Exception:
+            pass
+
+    def _restore_window_geometry(self):
+        p = self.cfg if isinstance(self.cfg, dict) else {}
+        win = p.get("window") if isinstance(p.get("window"), dict) else {}
+        if not win:
+            return
+        try:
+            x = int(win.get("x", self.x()))
+            y = int(win.get("y", self.y()))
+            w = max(900, int(win.get("w", self.width())))
+            h = max(560, int(win.get("h", self.height())))
+            self.setGeometry(x, y, w, h)
+            if bool(win.get("maximized", False)):
+                QTimer.singleShot(0, self.showMaximized)
+        except Exception:
+            pass
+
+    def _restore_saved_layout(self):
+        p = self.cfg if isinstance(self.cfg, dict) else {}
+        self._restoring_layout = True
+        try:
+            sizes = p.get("split_sizes")
+            if hasattr(self, "split") and isinstance(sizes, list) and len(sizes) == 3:
+                self.split.setSizes([max(0, int(v)) for v in sizes])
+            left_sizes = p.get("left_split_sizes")
+            if hasattr(self, "left_lists_split") and isinstance(left_sizes, list) and len(left_sizes) == 2:
+                self.left_lists_split.setSizes([max(0, int(v)) for v in left_sizes])
+            cat = p.get("current_category")
+            if cat and hasattr(self, "cats"):
+                names = [self._cat_name_from_item(self.cats.item(i)) for i in range(self.cats.count())]
+                if cat in names and self._current_cat_name() != cat:
+                    self.cats.setCurrentRow(names.index(cat))
+        except Exception:
+            pass
+        finally:
+            self._restoring_layout = False
+
     def _save_prefs(self):
         """Persist current UI choices."""
         try:
@@ -5249,6 +5327,25 @@ class App(QMainWindow):
                 self.cfg["last_mode"] = self.mode.currentText()
             if getattr(self, "_current_station", None):
                 self.cfg["last_station"] = self._current_station
+            try:
+                geo = self.normalGeometry() if self.isMaximized() else self.geometry()
+                self.cfg["window"] = {
+                    "x": int(geo.x()),
+                    "y": int(geo.y()),
+                    "w": int(geo.width()),
+                    "h": int(geo.height()),
+                    "maximized": bool(self.isMaximized()),
+                }
+            except Exception:
+                pass
+            if hasattr(self, "split"):
+                self.cfg["split_sizes"] = [int(v) for v in self.split.sizes()]
+            if hasattr(self, "left_lists_split"):
+                self.cfg["left_split_sizes"] = [int(v) for v in self.left_lists_split.sizes()]
+            if hasattr(self, "cats"):
+                cur = self._current_cat_name()
+                if cur:
+                    self.cfg["current_category"] = cur
             save_json(CONFIG, self.cfg)
         except Exception as e:
             try:
@@ -5376,6 +5473,7 @@ class App(QMainWindow):
             if hasattr(self, "split"):
                 total = max(900, self.split.width())
                 self.split.setSizes([int(total * 0.28), int(total * 0.50), int(total * 0.22)])
+            self._schedule_save_prefs(100)
             return
 
         # Visible → fully hide, show reopen breadcrumb in center edge
@@ -5395,6 +5493,7 @@ class App(QMainWindow):
             self.btn_show_right.setVisible(True)
             self.btn_show_right.raise_()
             self.btn_show_right.setToolTip("Show side panel")
+        self._schedule_save_prefs(100)
 
 
     def closeEvent(self, e):
