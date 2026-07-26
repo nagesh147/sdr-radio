@@ -1209,6 +1209,7 @@ class App(QMainWindow):
             return
         cat = getattr(self, "_visible_station_cat", "")
         current = getattr(self, "_current_station_key", None)
+        matched_item = None
         for i in range(self.stations_list.count()):
             item = self.stations_list.item(i)
             row = self.stations_list.itemWidget(item)
@@ -1217,11 +1218,26 @@ class App(QMainWindow):
             station = item.data(Qt.UserRole)
             row_cat = self._station_source_cat(cat, station)
             playing = bool(isinstance(station, dict) and self._station_identity(row_cat, station) == current)
+            if playing:
+                matched_item = item
             row._playing = playing
             row.setProperty("playing", playing)
             row.style().unpolish(row)
             row.style().polish(row)
             row._sync()
+        try:
+            self.stations_list.blockSignals(True)
+            if matched_item is not None:
+                self.stations_list.setCurrentItem(matched_item)
+                self.stations_list.scrollToItem(matched_item)
+            elif current:
+                self.stations_list.clearSelection()
+                self.stations_list.setCurrentItem(None)
+        finally:
+            try:
+                self.stations_list.blockSignals(False)
+            except Exception:
+                pass
 
     def _refresh_category_visuals(self):
         if not hasattr(self, "cats"):
@@ -2176,6 +2192,7 @@ class App(QMainWindow):
             self.stations_list.clear()
             self._fill_stations_list(rows, clear=False, cat="Fav")
             self.stations_list.blockSignals(False)
+            self._refresh_station_row_visuals()
             self._apply_stream_mode(bool(rows) and all(bool(s.get("url")) for s in rows))
             self.statusBar().showMessage(f"Fav: {len(rows)} stations")
             return
@@ -2205,6 +2222,7 @@ class App(QMainWindow):
             return
         self._fill_stations_list(self.stations[cat_name], clear=False, cat=cat_name)
         self.stations_list.blockSignals(False)
+        self._refresh_station_row_visuals()
         # SDR-side "Internet" / stream categories → internet player layout
         self._apply_stream_mode(self._cat_is_internet(cat_name))
         try:
@@ -3538,14 +3556,15 @@ class App(QMainWindow):
             self._fill_stations_list(self._favorite_station_rows(), cat="Fav")
         else:
             self._fill_stations_list(self.stations.get(cat) or self._view_items_by_cat.get(cat, []), cat=cat)
-        for i in range(self.stations_list.count()):
-            it = self.stations_list.item(i)
-            data = it.data(Qt.UserRole)
-            if isinstance(data, dict) and data.get("name") == name:
-                self.stations_list.setCurrentRow(i)
-                break
+            for i in range(self.stations_list.count()):
+                it = self.stations_list.item(i)
+                data = it.data(Qt.UserRole)
+                if isinstance(data, dict) and data.get("name") == name:
+                    self.stations_list.setCurrentRow(i)
+                    break
         self.toast.show_msg(("Favorited " if added else "Unfavorited ") + str(name))
         self._refresh_category_visuals()
+        self._refresh_station_row_visuals()
 
     def _save_config(self):
         """Save config to file."""
