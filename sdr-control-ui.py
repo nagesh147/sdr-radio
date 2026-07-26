@@ -1113,16 +1113,17 @@ class App(QMainWindow):
 
     def _category_order(self, categories):
         categories = list(categories or [])
+        categories = [c for c in categories if str(c) != "Fav"]
         pref = ["Internet", "AIR-Net", "Telugu-Net", "India SDR FM"]
         mode = self.cfg.get("section_sort", "Pinned first") if hasattr(self, "cfg") else "Pinned first"
         if mode == "Name (A-Z)":
-            return sorted(categories, key=lambda x: str(x).lower())
+            return ["Fav"] + sorted(categories, key=lambda x: str(x).lower())
         if mode == "Favorites":
             fav_cats = {f.get("cat") for f in self.cfg.get("station_favs", []) if isinstance(f, dict)}
-            return sorted(categories, key=lambda x: (x not in fav_cats, str(x).lower()))
+            return ["Fav"] + sorted(categories, key=lambda x: (x not in fav_cats, str(x).lower()))
         pinned = [c for c in pref if c in categories]
         rest = [c for c in categories if c not in pinned]
-        return pinned + sorted(rest, key=lambda x: str(x).lower())
+        return ["Fav"] + pinned + sorted(rest, key=lambda x: str(x).lower())
 
     def _populate_categories(self, categories=None):
         categories = self._category_order(categories if categories is not None else self.stations.keys())
@@ -1150,6 +1151,59 @@ class App(QMainWindow):
         freq = str(station.get("freq", "") or "")
         return (str(cat or ""), name, url, freq)
 
+    def _station_source_cat(self, fallback_cat, station):
+        if isinstance(station, dict) and station.get("_fav_cat"):
+            return str(station.get("_fav_cat") or "")
+        return str(fallback_cat or "")
+
+    def _station_matches_fav(self, station, fav):
+        if not isinstance(station, dict) or not isinstance(fav, dict):
+            return False
+        if str(station.get("name", "")) != str(fav.get("name", "")):
+            return False
+        fav_url = str(fav.get("url", "") or "")
+        fav_freq = str(fav.get("freq", "") or "")
+        if fav_url or fav_freq:
+            url = str(station.get("url", "") or station.get("url_resolved", "") or "")
+            freq = str(station.get("freq", "") or "")
+            return url == fav_url and freq == fav_freq
+        return True
+
+    def _favorite_station_rows(self):
+        rows = []
+        seen = set()
+        for fav in self.cfg.get("station_favs", []) or []:
+            if not isinstance(fav, dict):
+                continue
+            cat = str(fav.get("cat", "") or "")
+            name = str(fav.get("name", "") or "")
+            if not cat or not name:
+                continue
+            found = None
+            for source in ((self.stations or {}).get(cat), self._view_items_by_cat.get(cat)):
+                for station in source or []:
+                    if self._station_matches_fav(station, fav):
+                        found = dict(station)
+                        break
+                if found:
+                    break
+            if found is None:
+                found = {"name": name, "mode": "net" if fav.get("url") else "fm"}
+                if fav.get("url"):
+                    found["url"] = fav.get("url")
+                if fav.get("freq"):
+                    try:
+                        found["freq"] = float(fav.get("freq"))
+                    except Exception:
+                        found["freq"] = fav.get("freq")
+            found["_fav_cat"] = cat
+            key = self._station_identity(cat, found)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(found)
+        return rows
+
     def _refresh_station_row_visuals(self):
         if not hasattr(self, "stations_list"):
             return
@@ -1161,7 +1215,8 @@ class App(QMainWindow):
             if not isinstance(row, StationRow):
                 continue
             station = item.data(Qt.UserRole)
-            playing = bool(isinstance(station, dict) and self._station_identity(cat, station) == current)
+            row_cat = self._station_source_cat(cat, station)
+            playing = bool(isinstance(station, dict) and self._station_identity(row_cat, station) == current)
             row._playing = playing
             row.setProperty("playing", playing)
             row.style().unpolish(row)
@@ -2114,6 +2169,16 @@ class App(QMainWindow):
                 self.sort_combo.setCurrentText(pref)
                 self.sort_combo.blockSignals(False)
         self._refresh_category_visuals()
+
+        if str(cat_name).strip().lower() == "fav":
+            rows = self._favorite_station_rows()
+            self.stations_list.blockSignals(True)
+            self.stations_list.clear()
+            self._fill_stations_list(rows, clear=False, cat="Fav")
+            self.stations_list.blockSignals(False)
+            self._apply_stream_mode(bool(rows) and all(bool(s.get("url")) for s in rows))
+            self.statusBar().showMessage(f"Fav: {len(rows)} stations")
+            return
          
         # Top-level Internet mode tab → radio-browser categories
         if getattr(self, "left_mode", None) is not None and self.left_mode.currentIndex() == 1:
@@ -2194,13 +2259,15 @@ class App(QMainWindow):
             if not isinstance(s, dict):
                 continue
             name = str(s.get("name", "?"))
-            if cat and self.is_station_favorite(cat, name, s):
+            row_cat = self._station_source_cat(cat, s)
+            if row_cat and self.is_station_favorite(row_cat, name, s):
                 favs.append((idx, s))
             else:
                 others.append((idx, s))
 
         for _, s in sorted(favs, key=sort_key) + sorted(others, key=sort_key):
             name = str(s.get("name", "?"))
+            row_cat = self._station_source_cat(cat, s)
             if s.get("url"):
                 suffix = s.get("country") or "net"
                 text = f"{name}  ·  {suffix}"
@@ -2212,8 +2279,10 @@ class App(QMainWindow):
                 it = QListWidgetItem()
                 it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
             it.setData(Qt.UserRole, s)
-            favored = bool(cat and self.is_station_favorite(cat, name, s))
-            playing = bool(cat and self._station_identity(cat, s) == getattr(self, "_current_station_key", None))
+            if cat == "Fav" and row_cat:
+                it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + f"Section: {row_cat}")
+            favored = bool(row_cat and self.is_station_favorite(row_cat, name, s))
+            playing = bool(row_cat and self._station_identity(row_cat, s) == getattr(self, "_current_station_key", None))
             if favored:
                 it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Favorite")
             if playing:
@@ -2223,8 +2292,8 @@ class App(QMainWindow):
                 text,
                 favored=favored,
                 playing=playing,
-                on_toggle=lambda st=s, c=cat: self._toggle_station_favorite_from_row(c, st),
-                on_play=lambda st=s, c=cat: self._play_station_data(st, c),
+                on_toggle=lambda st=s, c=row_cat: self._toggle_station_favorite_from_row(c, st),
+                on_play=lambda st=s, c=row_cat: self._play_station_data(st, c),
             )
             it.setSizeHint(QSize(0, 36))
             self.stations_list.setItemWidget(it, row)
@@ -2546,6 +2615,8 @@ class App(QMainWindow):
         cat = self._current_cat_name()
         if not cat:
             return
+        if cat == "Fav":
+            return
         menu = QMenu(self)
         s = item.data(Qt.UserRole) if item else None
         act_add = menu.addAction("Add station…")
@@ -2669,7 +2740,7 @@ class App(QMainWindow):
         s = item.data(Qt.UserRole)
         if not s:
             return
-        self._play_station_data(s, self._current_cat_name())
+        self._play_station_data(s, self._station_source_cat(self._current_cat_name(), s))
 
     def _play_station_data(self, station, cat=""):
         s = station
@@ -3462,7 +3533,11 @@ class App(QMainWindow):
             return
         name = station.get("name", "Station")
         added = self.toggle_station_favorite(cat, name, station)
-        self._fill_stations_list(self.stations.get(cat) or self._view_items_by_cat.get(cat, []), cat=cat)
+        visible_cat = self._current_cat_name()
+        if visible_cat == "Fav":
+            self._fill_stations_list(self._favorite_station_rows(), cat="Fav")
+        else:
+            self._fill_stations_list(self.stations.get(cat) or self._view_items_by_cat.get(cat, []), cat=cat)
         for i in range(self.stations_list.count()):
             it = self.stations_list.item(i)
             data = it.data(Qt.UserRole)
