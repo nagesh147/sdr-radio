@@ -89,6 +89,15 @@ Keys (optional): put API keys in:
     - Regional languages: Tamil, Telugu, Kannada, Malayalam, Punjabi, Gujarati, Odia, Urdu, Assamese
     - City-specific: Delhi, Mumbai, Kolkata, Chennai, Bangalore, Kochi, Hyderabad, Jaipur, Lucknow, and more
     - Automatically fetches updates from radio-browser API
+  - **Telugu-Net** — Telugu-language internet radio consolidated
+    - Official AIR Telugu service (national broadcast)
+    - Regional: Hyderabad (AIR A, FM Rainbow, Vividh Bharati)
+    - Andhra Pradesh: Vijayawada (FM Rainbow, Krishna Vani, Vividh Bharati)
+    - Visakhapatnam AIR center
+    - Independent Telugu FM channels (TORi, Melody, Telugu FM, Live FM)
+    - Religious & cultural: Radio Sai (Harmony & Discourse), Hand of Jesus
+    - Diaspora: London Telugu Radio
+    - Automatically fetches updates from radio-browser API
 - **CC** — live stream titles / captions (ICY metadata + song ID)  
 - **Lyrics** — right pane (lyrics icon or Lyrics nav)  
 - **Ctrl+R / F5** — reload UI in-process  

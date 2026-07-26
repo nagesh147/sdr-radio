@@ -242,6 +242,34 @@ AIR_NET_SEED = [
     {"name": "Vividh Bharati Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio176/playlist.m3u8", "mode": "net"},
 ]
 
+# Curated Telugu-language internet streams (offline seed; refreshed online)
+TELUGU_NET_SEED = [
+    # Official AIR Telugu channels
+    {"name": "AIR Telugu", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio141/hlspbaudio141_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Hyderabad A", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio032/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Hyderabad", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio031/chunklist.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati Hyderabad", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio034/playlist.m3u8", "mode": "net"},
+    # Vijayawada / Andhra Pradesh channels
+    {"name": "AIR Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio084/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio174/playlist.m3u8", "mode": "net"},
+    {"name": "FM Rainbow Krishna Vani Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio175/playlist.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio176/playlist.m3u8", "mode": "net"},
+    {"name": "AP 9 FM", "url": "https://stream.ap9fm.in/radio/8000/radio.mp3", "mode": "net"},
+    # Visakhapatnam
+    {"name": "AIR Visakhapatnam", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio085/playlist.m3u8", "mode": "net"},
+    # Popular independent Telugu channels
+    {"name": "TORi Live Radio", "url": "http://173.203.133.187:9700/;", "mode": "net"},
+    {"name": "Melody Radio Telugu", "url": "https://a1.asurahosting.com:9580/radio.mp3", "mode": "net"},
+    {"name": "Telugu FM", "url": "https://stream-289.surfernetwork.com/b9qx8kca2d0uv", "mode": "net"},
+    {"name": "Live FM", "url": "https://stream.aiir.com/dbv0rxpwp6ytv", "mode": "net"},
+    # Religious & Cultural
+    {"name": "Radio Sai (Harmony)", "url": "http://stream.radiosai.net:8008/", "mode": "net"},
+    {"name": "Radio Sai (Discourse)", "url": "http://stream.radiosai.net:8000/", "mode": "net"},
+    {"name": "Hand Of Jesus - Telugu", "url": "https://dc1.serverse.com/proxy/hojtelugu/stream", "mode": "net"},
+    # Diaspora & Global
+    {"name": "London Telugu Radio", "url": "https://c14.radioboss.fm/playlist/33/stream.m3u", "mode": "net"},
+]
+
 DEFAULT_STATIONS = {
     "Internet": [
         {"name": "Radio Mirchi Online", "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/MIR_HIN_BACCYC.mp3", "mode": "net"},
@@ -252,6 +280,8 @@ DEFAULT_STATIONS = {
     ],
     # All India Radio / Akashvani internet streams (consolidated)
     "AIR-Net": [dict(s) for s in AIR_NET_SEED],
+    # Telugu-language internet streams (consolidated)
+    "Telugu-Net": [dict(s) for s in TELUGU_NET_SEED],
 
     "India FM": [
         {"name": "Big FM", "freq": 92.7, "mode": "wbfm"},
@@ -598,9 +628,10 @@ class App(QMainWindow):
         self.favs = load_json(FAV_F, [])
         self.ac_key = AC_KEY.read_text().strip() if AC_KEY.exists() else ""
         self.gn_key = GN_KEY.read_text().strip() if GN_KEY.exists() else ""
-        # Ensure AIR-Net category exists even on older stations.json
+        # Ensure AIR-Net and Telugu-Net categories exist even on older stations.json
         try:
             self._ensure_air_net_category(save=True)
+            self._ensure_telugu_net_category(save=True)
         except Exception:
             pass
         # First-run seed (dirs, default art, config) — safe if already present
@@ -1725,6 +1756,14 @@ class App(QMainWindow):
             self.statusBar().showMessage("AIR-Net: loading All India Radio streams…")
             self._refresh_air_net_from_internet()
             return
+        # Telugu-Net: consolidated Telugu-language internet channels
+        if cat and str(cat).strip().lower() in ("telugu-net", "telugu net", "telugunet"):
+            self._apply_stream_mode(True)
+            self._ensure_telugu_net_category(save=False)
+            self._fill_stations_list(self.stations.get("Telugu-Net") or TELUGU_NET_SEED)
+            self.statusBar().showMessage("Telugu-Net: loading Telugu-language streams…")
+            self._refresh_telugu_net_from_internet()
+            return
         self.stations_list.blockSignals(True)
         self.stations_list.clear()
         if not cat or cat not in self.stations:
@@ -1766,7 +1805,7 @@ class App(QMainWindow):
         if not cat:
             return False
         name = str(cat).strip().lower()
-        if name in ("internet", "stream", "online", "web radio", "webradio", "air-net", "air net", "airnet"):
+        if name in ("internet", "stream", "online", "web radio", "webradio", "air-net", "air net", "airnet", "telugu-net", "telugu net", "telugunet"):
             return True
         items = (self.stations or {}).get(cat) or []
         if not items:
@@ -1908,6 +1947,132 @@ class App(QMainWindow):
                     seen[disp] = (url, fav, score)
         # Also ensure curated seeds are present
         for s in AIR_NET_SEED:
+            name = s["name"]
+            if name not in seen:
+                seen[name] = (s["url"], s.get("favicon"), 5000)
+        out = []
+        for name, (url, fav, _sc) in sorted(seen.items(), key=lambda x: x[0].lower()):
+            d = {"name": name, "url": url, "mode": "net"}
+            if fav:
+                d["favicon"] = fav
+            out.append(d)
+        return out
+
+    def _ensure_telugu_net_category(self, save=True):
+        """Make sure Telugu-Net exists with at least the curated seed list."""
+        if not isinstance(self.stations, dict):
+            self.stations = {}
+        cur = self.stations.get("Telugu-Net")
+        if not cur:
+            self.stations["Telugu-Net"] = [dict(s) for s in TELUGU_NET_SEED]
+            if save:
+                try:
+                    save_json(STATIONS_F, self.stations)
+                except Exception:
+                    pass
+            return
+        # Merge any missing seed stations by name
+        have = {str(s.get("name", "")).strip().lower() for s in cur if isinstance(s, dict)}
+        added = 0
+        for s in TELUGU_NET_SEED:
+            key = str(s.get("name", "")).strip().lower()
+            if key and key not in have:
+                cur.append(dict(s))
+                have.add(key)
+                added += 1
+        if added and save:
+            self.stations["Telugu-Net"] = cur
+            try:
+                save_json(STATIONS_F, self.stations)
+            except Exception:
+                pass
+
+    def _refresh_telugu_net_from_internet(self):
+        """Fetch Telugu-language streams from radio-browser and merge."""
+        def work():
+            try:
+                stations = self._fetch_telugu_net_stations()
+                if not stations:
+                    self.sig.log.emit("Telugu-Net: no online results — using seed list")
+                    self.sig.net_list.emit(
+                        [{"name": s["name"], "url": s["url"], "favicon": s.get("favicon")} for s in TELUGU_NET_SEED],
+                        "Telugu-Net",
+                    )
+                    return
+                self.stations["Telugu-Net"] = stations
+                try:
+                    save_json(STATIONS_F, self.stations)
+                except Exception:
+                    pass
+                self.sig.log.emit(f"Telugu-Net: {len(stations)} Telugu-language streams")
+                self.sig.net_list.emit(
+                    [
+                        {
+                            "name": s["name"],
+                            "url": s["url"],
+                            "url_resolved": s["url"],
+                            "favicon": s.get("favicon") or "",
+                            "countrycode": "IN",
+                        }
+                        for s in stations
+                    ],
+                    "Telugu-Net",
+                )
+            except Exception as e:
+                self.sig.log.emit(f"Telugu-Net refresh error: {e}")
+                self.sig.net_list.emit([], f"Telugu-Net error: {e}")
+
+        threading.Thread(target=work, daemon=True, name="telugu-net-refresh").start()
+
+    def _fetch_telugu_net_stations(self) -> list:
+        """Query radio-browser for Telugu-language streams."""
+        queries = [
+            "/json/stations/search?name=telugu&limit=100&hidebroken=true&order=votes",
+            "/json/stations/search?language=telugu&limit=80&hidebroken=true&order=votes",
+            "/json/stations/search?name=Vijayawada&country=India&limit=50&hidebroken=true&order=votes",
+            "/json/stations/search?name=Hyderabad&country=India&limit=50&hidebroken=true&order=votes",
+            "/json/stations/search?name=Telangana&country=India&limit=40&hidebroken=true&order=votes",
+        ]
+        seen = {}
+        for path in queries:
+            try:
+                data = self._radio_browser_get(path)
+            except Exception:
+                data = None
+            if not isinstance(data, list):
+                continue
+            for s in data:
+                if not isinstance(s, dict):
+                    continue
+                name = (s.get("name") or "").strip()
+                url = (s.get("url_resolved") or s.get("url") or "").strip()
+                if not name or not url:
+                    continue
+                nl = name.lower()
+                # Filter for Telugu relevance
+                is_telugu = any(
+                    k in nl
+                    for k in (
+                        "telugu", "telangana", "andhra", "vijayawada", "hyderabad",
+                        "krishna vani", "fm rainbow", "raagam", "vividh bharati",
+                    )
+                )
+                # Exclude non-Telugu stations
+                if any(x in nl for x in ("english", "hindi", "spanish", "french", "chinese")):
+                    is_telugu = False
+                if not is_telugu:
+                    continue
+                fav = (s.get("favicon") or "").strip() or None
+                if fav in ("null", "None"):
+                    fav = None
+                votes = int(s.get("votes") or 0)
+                disp = re.sub(r"\s+", " ", name).strip()
+                score = votes + 50
+                prev = seen.get(disp)
+                if prev is None or score > prev[2]:
+                    seen[disp] = (url, fav, score)
+        # Also ensure curated seeds are present
+        for s in TELUGU_NET_SEED:
             name = s["name"]
             if name not in seen:
                 seen[name] = (s["url"], s.get("favicon"), 5000)
@@ -4183,9 +4348,9 @@ class App(QMainWindow):
             self.cats.blockSignals(True)
             self.cats.clear()
             keys = list(self.stations.keys())
-            # Preferred order: Internet, AIR-Net, then the rest alphabetically-ish as stored
+            # Preferred order: Internet, AIR-Net, Telugu-Net, then the rest alphabetically-ish as stored
             ordered = []
-            for pref in ("Internet", "AIR-Net"):
+            for pref in ("Internet", "AIR-Net", "Telugu-Net"):
                 if pref in keys:
                     ordered.append(pref)
                     keys.remove(pref)
