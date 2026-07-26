@@ -4720,13 +4720,113 @@ class App(QMainWindow):
         subprocess.Popen(["sdrpp"])
         self.toast.show_msg("SDR++ launched")
 
+    def _run_root_shell(self, command, timeout=30):
+        if os.geteuid() == 0:
+            return subprocess.run(
+                ["sh", "-c", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+            )
+        attempts = [["sudo", "-n", "sh", "-c", command]]
+        try:
+            if sys.stdin is not None and sys.stdin.isatty():
+                attempts.append(["sudo", "sh", "-c", command])
+        except Exception:
+            pass
+        try:
+            import shutil
+            if shutil.which("pkexec"):
+                attempts.append(["pkexec", "sh", "-c", command])
+        except Exception:
+            pass
+        last = None
+        for cmd in attempts:
+            try:
+                last = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=timeout,
+                )
+                if last.returncode == 0:
+                    return last
+            except Exception as e:
+                class Result:
+                    returncode = 1
+                    stdout = ""
+                    stderr = str(e)
+                last = Result()
+        return last
+
+    def _readsb_ready(self, timeout=16):
+        deadline = time.time() + timeout
+        last_err = ""
+        while time.time() < deadline:
+            try:
+                active = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", "readsb"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ).returncode == 0
+                if not active:
+                    last_err = "readsb service is not active"
+                    time.sleep(0.8)
+                    continue
+                req = urllib.request.Request(
+                    "http://localhost/tar1090/data/aircraft.json",
+                    headers={"User-Agent": "SDR-Radio/1.0", "Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "ignore"))
+                if isinstance(data, dict) and "aircraft" in data:
+                    return True, ""
+                last_err = "tar1090 returned invalid aircraft data"
+            except Exception as e:
+                last_err = str(e)
+            time.sleep(0.8)
+        return False, last_err or "readsb did not become ready"
+
     def start_flights(self):
         self.stop()
-        subprocess.run(["sudo", "mkdir", "-p", "/run/readsb"])
-        subprocess.run(["sudo", "chmod", "777", "/run/readsb"])
-        subprocess.run(["sudo", "systemctl", "restart", "readsb"])
-        time.sleep(1.2)
+        subprocess.run(["killall", "-9", "sdrpp", "satdump", "satdump-ui", "AIS-catcher"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.toast.show_msg("Starting flight tracker…")
+        self.statusBar().showMessage("Starting readsb…")
+        cmd = "mkdir -p /run/readsb && chmod 777 /run/readsb && systemctl daemon-reload && systemctl restart readsb"
+        result = self._run_root_shell(cmd, timeout=45)
+        if result is None or result.returncode != 0:
+            err = ((getattr(result, "stderr", "") or getattr(result, "stdout", "") or "permission denied").strip())
+            self.log(f"readsb start failed: {err}")
+            self.statusBar().showMessage("Flight tracker failed: readsb not started", 6000)
+            self.toast.show_msg("readsb failed to start")
+            QMessageBox.warning(
+                self,
+                "Flight tracker",
+                "Could not start readsb.\n\n"
+                "If no password prompt appeared, run this once in a terminal:\n"
+                "sudo systemctl daemon-reload && sudo systemctl restart readsb\n\n"
+                + err[:500],
+            )
+            return
+        ok, err = self._readsb_ready()
+        if not ok:
+            self.log(f"readsb not ready: {err}")
+            self.statusBar().showMessage("Flight tracker failed: decoder data not ready", 6000)
+            self.toast.show_msg("readsb data not ready")
+            QMessageBox.warning(
+                self,
+                "Flight tracker",
+                "readsb started, but tar1090 data is not ready yet.\n\n"
+                "Check dongle/antenna and service logs:\n"
+                "systemctl status readsb\n\n"
+                + str(err)[:500],
+            )
+            return
         subprocess.Popen(["xdg-open", "http://localhost/tar1090/"])
+        self.statusBar().showMessage("Flight tracker ready", 4000)
         self.toast.show_msg("Flights opened")
 
     def start_wx(self):

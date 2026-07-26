@@ -1,1 +1,3 @@
-xdg-open http://localhost/tar1090/
+#!/bin/bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/flights.sh"

@@ -82,14 +82,24 @@ while true; do
       log "▶ Starting Flight Tracker (readsb)"
       sudo mkdir -p /run/readsb
       sudo chmod 777 /run/readsb
-      sudo systemctl start readsb
-      sleep 2.5
-      if systemctl is-active --quiet readsb; then
+      sudo systemctl daemon-reload
+      sudo systemctl restart readsb
+      READY=0
+      for _ in {1..20}; do
+        if systemctl is-active --quiet readsb &&
+           curl -fsS --max-time 2 http://localhost/tar1090/data/aircraft.json >/dev/null; then
+          READY=1
+          break
+        fi
+        sleep 0.8
+      done
+      if [ "$READY" = "1" ]; then
         log "✓ readsb running"
         xdg-open http://localhost/tar1090/ &
       else
-        log "✗ Failed to start readsb"
-        zenity --error --text="Failed to start Flight Tracker"
+        log "✗ readsb/tar1090 data not ready"
+        systemctl status readsb --no-pager -l >> "$LOG_FILE" 2>&1 || true
+        zenity --error --text="Flight Tracker data is not ready. Check: systemctl status readsb"
       fi
       open_status
       ;;
