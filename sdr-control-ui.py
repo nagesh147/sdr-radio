@@ -2272,10 +2272,13 @@ class App(QMainWindow):
         # Internet stream
         if s.get("url"):
             self._apply_stream_mode(True)
+            # Get current category
+            cat = self.cats.currentItem().text() if self.cats.currentItem() else ""
             self.play_stream(
                 s.get("url"),
                 s.get("name", "Stream"),
                 favicon=s.get("favicon") or s.get("logo") or s.get("favicon_url"),
+                category=cat,
             )
             return
         # RF station — restore SDR player/tuner if we were in stream UI
@@ -2383,10 +2386,14 @@ class App(QMainWindow):
         self._art_path = None
 
     def _prefetch_internet_arts(self):
-        """Background: cache logos only for Internet (url) stations — never SDR/RF."""
+        """Background: cache logos only for Internet (url) stations — never SDR/RF.
+        Excludes AIR-Net and Telugu-Net (use default placeholders)."""
         def work():
             names_urls = []
             for cat, items in (self.stations or {}).items():
+                # Skip album art for AIR-Net and Telugu-Net
+                if cat.lower() in ("air-net", "telugu-net"):
+                    continue
                 for s in items or []:
                     if isinstance(s, dict) and s.get("url") and s.get("name"):
                         names_urls.append(
@@ -3136,8 +3143,9 @@ class App(QMainWindow):
 
 
 
-    def play_stream(self, url, name="Internet Radio", favicon=None):
-        """Play an internet radio URL via ffplay (fallback mpv)."""
+    def play_stream(self, url, name="Internet Radio", favicon=None, category=""):
+        """Play an internet radio URL via ffplay (fallback mpv).
+        Skip album art display for AIR-Net and Telugu-Net categories."""
         try:
             self.stop()
         except Exception:
@@ -3151,17 +3159,26 @@ class App(QMainWindow):
         self._stream_url = url
         self._stream_favicon = favicon or INTERNET_STATION_ART.get(name)
 
-        # Station logo / album art
-        def art_work():
-            path = self._ensure_station_art(name, favicon=self._stream_favicon)
-            if path:
-                self.sig.art.emit(path)
-        threading.Thread(target=art_work, daemon=True).start()
-        # Show cached immediately if present
-        try:
-            self._show_station_art(name, favicon=self._stream_favicon)
-        except Exception:
-            pass
+        # Station logo / album art (skip for AIR-Net and Telugu-Net)
+        skip_art = category.lower() in ("air-net", "telugu-net")
+        if not skip_art:
+            def art_work():
+                path = self._ensure_station_art(name, favicon=self._stream_favicon)
+                if path:
+                    self.sig.art.emit(path)
+            threading.Thread(target=art_work, daemon=True).start()
+            # Show cached immediately if present
+            try:
+                self._show_station_art(name, favicon=self._stream_favicon)
+            except Exception:
+                pass
+        else:
+            # Clear album art for AIR-Net/Telugu-Net
+            art = getattr(self, "sp_art", None) or getattr(self, "art", None)
+            if art is not None:
+                art.setPixmap(QPixmap())
+                art.setText("♪")
+            self._art_path = None
 
         cmd = None
         # Prefer ffplay (ffmpeg), quiet, no window
