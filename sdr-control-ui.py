@@ -191,6 +191,57 @@ def load_icon(name: str) -> QIcon:
         return QIcon(str(p))
     return QIcon()
 
+# Curated All India Radio / Akashvani internet streams (offline seed; refreshed online)
+AIR_NET_SEED = [
+    {"name": "AIR FM Gold Delhi", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio005/hlspbaudio005_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Delhi", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio004/hlspbaudio004_Auto.m3u8", "mode": "net"},
+    {"name": "AIR News 24x7", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio002/hlspbaudio002_Auto.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio001/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Raagam", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudioragam/hlspbaudioragam_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Urdu", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio006/hlspbaudio006_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Mumbai", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio008/hlspbaudio008_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Gold Kolkata", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio057/hlspbaudio057_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Kolkata", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio058/hlspbaudio058_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Chennai", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio022/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Gold Chennai", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio021/playlist.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati Chennai", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio024/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Mumbai / VB", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio011/hlspbaudio011_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Malayalam", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio230/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Tamil", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio025/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Telugu", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio141/hlspbaudio141_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Punjabi", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio138/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Gujarati", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio135/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Odia / Cuttack", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio137/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Assamese", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio133/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Maitree Kolkata", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio245/hlspbaudio24564kbps.m3u8", "mode": "net"},
+    {"name": "AIR Asmita Vahini", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio010/hlspbaudio010_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Bangalore / Karnataka", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio030/hlspbaudio030_Auto.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Bangalore", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio031/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Kochi FM Rainbow", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio044/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Kozhikode Real FM", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio083/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Pune FM", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio013/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Hyderabad", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio032/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Jaipur", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio192/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Patna", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio087/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Srinagar", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio136/playlist.m3u8", "mode": "net"},
+    # Additional regional and special channels
+    {"name": "AIR Lucknow", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio088/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Chandigarh", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio048/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Thrissur", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio036/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Trivandrum", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio046/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Madhya Pradesh", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio091/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Ahmednagar", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio012/hlspbaudio012_Auto.m3u8", "mode": "net"},
+    {"name": "AIR Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio084/playlist.m3u8", "mode": "net"},
+    {"name": "AIR Visakhapatnam", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio085/playlist.m3u8", "mode": "net"},
+    # Hyderabad specific channels
+    {"name": "AIR Hyderabad A", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio032/playlist.m3u8", "mode": "net"},
+    {"name": "AIR FM Rainbow Hyderabad", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio031/chunklist.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati Hyderabad", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio034/playlist.m3u8", "mode": "net"},
+    # Additional Vividh Bharati regional channels
+    {"name": "Vividh Bharati Bengaluru", "url": "https://airhlspush.pc.cdn.bitgravity.com/httppush/hlspbaudio026/hlspbaudio026_Auto.m3u8", "mode": "net"},
+    {"name": "Vividh Bharati Vijayawada", "url": "https://air.pc.cdn.bitgravity.com/air/live/pbaudio176/playlist.m3u8", "mode": "net"},
+]
+
 DEFAULT_STATIONS = {
     "Internet": [
         {"name": "Radio Mirchi Online", "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/MIR_HIN_BACCYC.mp3", "mode": "net"},
@@ -199,6 +250,8 @@ DEFAULT_STATIONS = {
         {"name": "Lofi Hip Hop", "url": "https://streams.ilovemusic.de/iloveradio17.mp3", "mode": "net"},
         {"name": "SomaFM Groove Salad", "url": "https://ice2.somafm.com/groovesalad-128-mp3", "mode": "net"},
     ],
+    # All India Radio / Akashvani internet streams (consolidated)
+    "AIR-Net": [dict(s) for s in AIR_NET_SEED],
 
     "India FM": [
         {"name": "Big FM", "freq": 92.7, "mode": "wbfm"},
@@ -545,6 +598,11 @@ class App(QMainWindow):
         self.favs = load_json(FAV_F, [])
         self.ac_key = AC_KEY.read_text().strip() if AC_KEY.exists() else ""
         self.gn_key = GN_KEY.read_text().strip() if GN_KEY.exists() else ""
+        # Ensure AIR-Net category exists even on older stations.json
+        try:
+            self._ensure_air_net_category(save=True)
+        except Exception:
+            pass
         # First-run seed (dirs, default art, config) — safe if already present
         try:
             rep = ensure_runtime_ready(log=lambda m: None)
@@ -1659,12 +1717,35 @@ class App(QMainWindow):
                 self._load_internet_cat(cat)
             self._apply_stream_mode(True)
             return
+        # AIR-Net: consolidated All India Radio internet channels
+        if cat and str(cat).strip().lower() in ("air-net", "air net", "airnet"):
+            self._apply_stream_mode(True)
+            self._ensure_air_net_category(save=False)
+            self._fill_stations_list(self.stations.get("AIR-Net") or AIR_NET_SEED)
+            self.statusBar().showMessage("AIR-Net: loading All India Radio streams…")
+            self._refresh_air_net_from_internet()
+            return
         self.stations_list.blockSignals(True)
         self.stations_list.clear()
         if not cat or cat not in self.stations:
             self.stations_list.blockSignals(False)
             return
-        for s in self.stations[cat]:
+        self._fill_stations_list(self.stations[cat], clear=False)
+        self.stations_list.blockSignals(False)
+        # SDR-side "Internet" / stream categories → internet player layout
+        self._apply_stream_mode(self._cat_is_internet(cat))
+        try:
+            if not self._cat_is_internet(cat):
+                self._highlight_station_for_freq(self.freq.value())
+        except Exception:
+            pass
+
+    def _fill_stations_list(self, items, clear=True):
+        """Populate the station list from a list of station dicts."""
+        if clear:
+            self.stations_list.blockSignals(True)
+            self.stations_list.clear()
+        for s in items or []:
             if not isinstance(s, dict):
                 continue
             name = str(s.get("name", "?"))
@@ -1677,21 +1758,15 @@ class App(QMainWindow):
                 it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
             it.setData(Qt.UserRole, s)
             self.stations_list.addItem(it)
-        self.stations_list.blockSignals(False)
-        # SDR-side "Internet" (or any stream) category → same UI as Internet radio
-        self._apply_stream_mode(self._cat_is_internet(cat))
-        try:
-            if not self._cat_is_internet(cat):
-                self._highlight_station_for_freq(self.freq.value())
-        except Exception:
-            pass
+        if clear:
+            self.stations_list.blockSignals(False)
 
     def _cat_is_internet(self, cat) -> bool:
         """True if category is stream/internet radio (not SDR frequencies)."""
         if not cat:
             return False
         name = str(cat).strip().lower()
-        if name in ("internet", "stream", "online", "web radio", "webradio"):
+        if name in ("internet", "stream", "online", "web radio", "webradio", "air-net", "air net", "airnet"):
             return True
         items = (self.stations or {}).get(cat) or []
         if not items:
@@ -1708,6 +1783,141 @@ class App(QMainWindow):
             return False
         # Majority (or all) stream URLs → treat as internet radio
         return urls > 0 and urls * 2 >= total
+
+    def _ensure_air_net_category(self, save=True):
+        """Make sure AIR-Net exists with at least the curated seed list."""
+        if not isinstance(self.stations, dict):
+            self.stations = {}
+        cur = self.stations.get("AIR-Net")
+        if not cur:
+            self.stations["AIR-Net"] = [dict(s) for s in AIR_NET_SEED]
+            if save:
+                try:
+                    save_json(STATIONS_F, self.stations)
+                except Exception:
+                    pass
+            return
+        # Merge any missing seed stations by name
+        have = {str(s.get("name", "")).strip().lower() for s in cur if isinstance(s, dict)}
+        added = 0
+        for s in AIR_NET_SEED:
+            key = str(s.get("name", "")).strip().lower()
+            if key and key not in have:
+                cur.append(dict(s))
+                have.add(key)
+                added += 1
+        if added and save:
+            self.stations["AIR-Net"] = cur
+            try:
+                save_json(STATIONS_F, self.stations)
+            except Exception:
+                pass
+
+    def _refresh_air_net_from_internet(self):
+        """Fetch All India Radio / Akashvani streams from radio-browser and merge."""
+        def work():
+            try:
+                stations = self._fetch_air_net_stations()
+                if not stations:
+                    self.sig.log.emit("AIR-Net: no online results — using seed list")
+                    self.sig.net_list.emit(
+                        [{"name": s["name"], "url": s["url"], "favicon": s.get("favicon")} for s in AIR_NET_SEED],
+                        "AIR-Net",
+                    )
+                    return
+                self.stations["AIR-Net"] = stations
+                try:
+                    save_json(STATIONS_F, self.stations)
+                except Exception:
+                    pass
+                self.sig.log.emit(f"AIR-Net: {len(stations)} All India Radio streams")
+                self.sig.net_list.emit(
+                    [
+                        {
+                            "name": s["name"],
+                            "url": s["url"],
+                            "url_resolved": s["url"],
+                            "favicon": s.get("favicon") or "",
+                            "countrycode": "IN",
+                        }
+                        for s in stations
+                    ],
+                    "AIR-Net",
+                )
+            except Exception as e:
+                self.sig.log.emit(f"AIR-Net refresh error: {e}")
+                self.sig.net_list.emit([], f"AIR-Net error: {e}")
+
+        threading.Thread(target=work, daemon=True, name="air-net-refresh").start()
+
+    def _fetch_air_net_stations(self) -> list:
+        """Query radio-browser for AIR / Akashvani / Vividh Bharati streams."""
+        queries = [
+            "/json/stations/search?name=All%20India%20Radio&limit=100&hidebroken=true&order=votes",
+            "/json/stations/search?name=AIR%20FM&limit=80&hidebroken=true&order=votes",
+            "/json/stations/search?name=AIR%20&country=India&limit=100&hidebroken=true&order=votes",
+            "/json/stations/search?name=Akashvani&limit=80&hidebroken=true&order=votes",
+            "/json/stations/search?name=Vividh&country=India&limit=40&hidebroken=true&order=votes",
+            "/json/stations/search?tag=all%20india%20radio&limit=50&hidebroken=true&order=votes",
+        ]
+        seen = {}
+        for path in queries:
+            try:
+                data = self._radio_browser_get(path)
+            except Exception:
+                data = None
+            if not isinstance(data, list):
+                continue
+            for s in data:
+                if not isinstance(s, dict):
+                    continue
+                name = (s.get("name") or "").strip()
+                url = (s.get("url_resolved") or s.get("url") or "").strip()
+                if not name or not url:
+                    continue
+                nl = name.lower()
+                is_cdn = any(x in url for x in ("bitgravity.com/air", "airhlspush", "air.pc.cdn"))
+                is_name = any(
+                    k in nl
+                    for k in (
+                        "all india radio", "akashvani", "aakashvani", "vividh bharati",
+                        "vividh bharti", "air fm gold", "air fm rainbow", "air news",
+                        "air rainbow", "air gold", "raagam",
+                    )
+                )
+                if any(
+                    x in nl
+                    for x in (
+                        "onair im", "dead air", "fair radio", "hair band", "air connect",
+                        "air libre", "bulgaria", "cookie crumble", "kccr", "air radio",
+                    )
+                ):
+                    continue
+                if not (is_cdn or is_name or re.match(r"^air\s", nl)):
+                    continue
+                # Prefer playlist.m3u8 over chunklist when both appear later
+                fav = (s.get("favicon") or "").strip() or None
+                if fav in ("null", "None"):
+                    fav = None
+                votes = int(s.get("votes") or 0)
+                disp = re.sub(r"\s+", " ", name).strip()
+                # Prefer official CDN URLs and higher votes
+                score = votes + (1000 if is_cdn else 0) + (50 if "playlist.m3u8" in url else 0)
+                prev = seen.get(disp)
+                if prev is None or score > prev[2]:
+                    seen[disp] = (url, fav, score)
+        # Also ensure curated seeds are present
+        for s in AIR_NET_SEED:
+            name = s["name"]
+            if name not in seen:
+                seen[name] = (s["url"], s.get("favicon"), 5000)
+        out = []
+        for name, (url, fav, _sc) in sorted(seen.items(), key=lambda x: x[0].lower()):
+            d = {"name": name, "url": url, "mode": "net"}
+            if fav:
+                d["favicon"] = fav
+            out.append(d)
+        return out
 
     def _apply_stream_mode(self, is_net: bool):
         """Apply Internet-radio layout (spotify player, hide tuner) or SDR layout."""
@@ -3968,10 +4178,19 @@ class App(QMainWindow):
                 self.cats.setCurrentRow(0)
                 self._load_internet_cat(self.cats.currentItem().text())
         else:
-            # Restore SDR categories
+            # Restore SDR categories (keep AIR-Net near Internet)
+            self._ensure_air_net_category(save=True)
             self.cats.blockSignals(True)
             self.cats.clear()
-            for k in self.stations:
+            keys = list(self.stations.keys())
+            # Preferred order: Internet, AIR-Net, then the rest alphabetically-ish as stored
+            ordered = []
+            for pref in ("Internet", "AIR-Net"):
+                if pref in keys:
+                    ordered.append(pref)
+                    keys.remove(pref)
+            ordered.extend(keys)
+            for k in ordered:
                 self.cats.addItem(k)
             self.cats.blockSignals(False)
             if self.cats.count():

@@ -84,6 +84,11 @@ Keys (optional): put API keys in:
 
 - **SDR tab** — local stations / frequency tuner  
 - **Internet tab** — radio-browser catalogs + streams  
+  - **AIR-Net** — All India Radio (Akashvani) consolidated channels from the internet
+    - National services: FM Gold, FM Rainbow, News 24x7, Raagam, Vividh Bharati
+    - Regional languages: Tamil, Telugu, Kannada, Malayalam, Punjabi, Gujarati, Odia, Urdu, Assamese
+    - City-specific: Delhi, Mumbai, Kolkata, Chennai, Bangalore, Kochi, Hyderabad, Jaipur, Lucknow, and more
+    - Automatically fetches updates from radio-browser API
 - **CC** — live stream titles / captions (ICY metadata + song ID)  
 - **Lyrics** — right pane (lyrics icon or Lyrics nav)  
 - **Ctrl+R / F5** — reload UI in-process  
