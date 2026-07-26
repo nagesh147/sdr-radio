@@ -180,10 +180,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QFrame, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
     QDoubleSpinBox, QTabWidget, QSplitter, QSizePolicy, QAbstractSpinBox, QToolTip,
-    QShortcut, QAction,
+    QShortcut, QAction, QGraphicsOpacityEffect,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QUrl, QSize
-from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor, QIcon, QKeySequence
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QTextCursor, QPainter, QColor, QPen, QFont, QPixmap, QDesktopServices, QCursor, QIcon, QKeySequence, QFontMetrics
 
 def load_icon(name: str) -> QIcon:
     p = ICONS / f"{name}.png"
@@ -283,7 +283,7 @@ DEFAULT_STATIONS = {
     # Telugu-language internet streams (consolidated)
     "Telugu-Net": [dict(s) for s in TELUGU_NET_SEED],
 
-    "India FM": [
+    "India SDR FM": [
         {"name": "Big FM", "freq": 92.7, "mode": "wbfm"},
         {"name": "Red FM", "freq": 93.5, "mode": "wbfm"},
         {"name": "Radio Mirchi", "freq": 98.3, "mode": "wbfm"},
@@ -547,6 +547,158 @@ class HoverIcon(QPushButton):
         self._fx.setOpacity(1.0 if on else 0.0)
 
 
+class StationRow(QWidget):
+    def __init__(self, text, favored=False, playing=False, on_toggle=None, on_play=None, parent=None):
+        super().__init__(parent)
+        self._on_toggle = on_toggle
+        self._on_play = on_play
+        self._favored = bool(favored)
+        self._playing = bool(playing)
+        self._text = str(text)
+        self._hovered = False
+        self.setFixedHeight(34)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setObjectName("stationRow")
+        self.setProperty("playing", self._playing)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 0, 5, 0)
+        row.setSpacing(6)
+        self.label = QLabel(self._text)
+        self.label.setObjectName("stationText")
+        self.label.setAutoFillBackground(False)
+        self.label.setMinimumWidth(0)
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.label.setTextInteractionFlags(Qt.NoTextInteraction)
+        row.addWidget(self.label, 1)
+        self.heart = QPushButton(self)
+        self.heart.setObjectName("stationHeart")
+        self.heart.setFixedSize(26, 26)
+        self.heart.setIcon(load_icon("heart"))
+        self.heart.setIconSize(QSize(14, 14))
+        self.heart.setToolTip("Favorite station")
+        self.heart.setCursor(Qt.PointingHandCursor)
+        self.heart.setFocusPolicy(Qt.NoFocus)
+        self.heart.setCheckable(True)
+        self.heart.setChecked(self._favored)
+        self.heart.clicked.connect(self._toggle)
+        self._heart_fx = QGraphicsOpacityEffect(self.heart)
+        self.heart.setGraphicsEffect(self._heart_fx)
+        self._heart_anim = QPropertyAnimation(self._heart_fx, b"opacity", self)
+        self._heart_anim.setDuration(130)
+        self._heart_anim.setEasingCurve(QEasingCurve.OutCubic)
+        row.addWidget(self.heart)
+        self._sync()
+
+    def _sync(self):
+        self.heart.setChecked(self._favored)
+        self.heart.setVisible(True)
+        self._heart_fx.setOpacity(1.0 if (self._favored or self._playing) else 0.0)
+
+    def _fade_heart(self, visible):
+        self.heart.setVisible(True)
+        self._heart_anim.stop()
+        self._heart_anim.setStartValue(float(self._heart_fx.opacity()))
+        self._heart_anim.setEndValue(1.0 if visible else 0.0)
+        self._heart_anim.start()
+
+    def _toggle(self):
+        if callable(self._on_toggle):
+            self._on_toggle()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and callable(self._on_play):
+            self._on_play()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def enterEvent(self, e):
+        self._hovered = True
+        self.setProperty("hovered", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self._fade_heart(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hovered = False
+        self.setProperty("hovered", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self._fade_heart(self._favored or self._playing)
+        super().leaveEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        fm = QFontMetrics(self.label.font())
+        self.label.setText(fm.elidedText(self._text, Qt.ElideRight, max(20, self.label.width())))
+
+
+class LibraryRow(QWidget):
+    def __init__(self, text, on_open=None, parent=None):
+        super().__init__(parent)
+        self._text = str(text)
+        self._on_open = on_open
+        self.setFixedHeight(34)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setObjectName("libraryRow")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 0, 8, 0)
+        row.setSpacing(0)
+        self.label = QLabel(self._text)
+        self.label.setObjectName("stationText")
+        self.label.setAutoFillBackground(False)
+        self.label.setMinimumWidth(0)
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.label.setTextInteractionFlags(Qt.NoTextInteraction)
+        row.addWidget(self.label, 1)
+
+    def enterEvent(self, e):
+        self.setProperty("hovered", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.setProperty("hovered", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().leaveEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if callable(self._on_open):
+            self._on_open()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        fm = QFontMetrics(self.label.font())
+        self.label.setText(fm.elidedText(self._text, Qt.ElideRight, max(20, self.label.width())))
+
+
+class BandGroupRow(QWidget):
+    def __init__(self, opened=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("bandGroupRow")
+        self.setFixedHeight(30)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addStretch(1)
+        self.icon = QLabel()
+        self.icon.setObjectName("bandGroupIcon")
+        self.icon.setAlignment(Qt.AlignCenter)
+        self.icon.setFixedSize(24, 24)
+        lay.addWidget(self.icon)
+        lay.addStretch(1)
+        self.setOpen(opened)
+
+    def setOpen(self, opened):
+        self.icon.setText("⌄" if opened else "›")
+
+
 class Collapse(QWidget):
     def __init__(self, title, start_open=True):
         super().__init__()
@@ -566,17 +718,37 @@ class Collapse(QWidget):
         self.body_l.setContentsMargins(0, 4, 0, 4)
         self.body_l.setSpacing(4)
         root.addWidget(self.body, 1)
+        self._anim = QPropertyAnimation(self.body, b"maximumHeight", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._apply()
 
     def _apply(self):
-        self.btn.setText(("▾  " if self._open else "▸  ") + self._title)
-        self.body.setVisible(self._open)
+        self.btn.setText(("⌄  " if self._open else "›  ") + self._title)
         if self._open:
+            self.body.setVisible(True)
+            try:
+                self._anim.finished.disconnect()
+            except Exception:
+                pass
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.setMinimumHeight(120)
             self.setMaximumHeight(16777215)
             self.body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self._anim.stop()
+            self._anim.setStartValue(max(0, self.body.maximumHeight()))
+            self._anim.setEndValue(16777215)
+            self._anim.start()
         else:
+            try:
+                self._anim.finished.disconnect()
+            except Exception:
+                pass
+            self._anim.stop()
+            self._anim.setStartValue(max(0, self.body.height()))
+            self._anim.setEndValue(0)
+            self._anim.finished.connect(self.body.hide)
+            self._anim.start()
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
             self.setMinimumHeight(0)
             self.setMaximumHeight(30)
@@ -623,9 +795,22 @@ class App(QMainWindow):
         self.sig.cc.connect(self._on_cc_text)
 
         self.stations = self._clean_stations(load_json(STATIONS_F, DEFAULT_STATIONS))
-        self.cfg = load_json(CONFIG, {"gain": 35, "song_id": True, "cc": False})
+        self._normalize_station_sections(save=True)
+        self.cfg = load_json(CONFIG, {
+            "gain": 35, "song_id": True, "cc": False,
+            "station_favs": [],  # List of {"cat": category, "name": station_name}
+            "sort_prefs": {},    # Per-category sort: {"category": "name|date|popularity"}
+            "section_sort": "Pinned first",
+            "collapsed_cats": [] # Categories that are collapsed
+        })
+        self._band_group_open = False
         self.history = load_json(HIST_F, [])
         self.favs = load_json(FAV_F, [])
+        self._view_items_by_cat = {}
+        self._visible_station_cat = ""
+        self._special_net_refreshed = set()
+        self._special_net_refreshing = set()
+        self._current_station_key = None
         self.ac_key = AC_KEY.read_text().strip() if AC_KEY.exists() else ""
         self.gn_key = GN_KEY.read_text().strip() if GN_KEY.exists() else ""
         # Ensure AIR-Net and Telugu-Net categories exist even on older stations.json
@@ -894,6 +1079,187 @@ class App(QMainWindow):
                 out[cat] = clean
         return out or DEFAULT_STATIONS
 
+    def _normalize_station_sections(self, save=False):
+        """Keep old user files compatible with the current section names."""
+        if not isinstance(self.stations, dict):
+            self.stations = {}
+            return
+        changed = False
+        for old in ("India FM", "India-FM", "India SDR", "FM India"):
+            if old in self.stations:
+                self.stations.setdefault("India SDR FM", [])
+                existing = {
+                    (str(s.get("name", "")).strip().lower(), str(s.get("freq", s.get("url", ""))))
+                    for s in self.stations["India SDR FM"] if isinstance(s, dict)
+                }
+                for s in self.stations.pop(old) or []:
+                    if not isinstance(s, dict):
+                        continue
+                    key = (str(s.get("name", "")).strip().lower(), str(s.get("freq", s.get("url", ""))))
+                    if key not in existing:
+                        self.stations["India SDR FM"].append(s)
+                        existing.add(key)
+                changed = True
+        if save and changed:
+            try:
+                save_json(STATIONS_F, self.stations)
+            except Exception:
+                pass
+
+    def _cat_name_from_item(self, item_or_text):
+        if item_or_text is None:
+            return ""
+        if hasattr(item_or_text, "data"):
+            data = item_or_text.data(Qt.UserRole)
+            if isinstance(data, dict) and data.get("cat"):
+                return str(data.get("cat"))
+            text = item_or_text.text()
+        else:
+            text = str(item_or_text)
+        text = re.sub(r"^[⌄›▾▸\s]+", "", str(text)).strip()
+        return text
+
+    def _band_group_cats(self):
+        return ("Airband", "Amateur", "Marine", "Shortwave")
+
+    def _band_group_is_open(self):
+        return bool(getattr(self, "_band_group_open", False)) or getattr(self, "_current_station_cat", "") in self._band_group_cats()
+
+    def _add_band_group_item(self):
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, {"group": "sdr_bands"})
+        item.setToolTip("Airband, Amateur, Marine, Shortwave")
+        item.setFlags(Qt.ItemIsEnabled)
+        item.setSizeHint(QSize(0, 30))
+        self.cats.addItem(item)
+        self.cats.setItemWidget(item, BandGroupRow(self._band_group_is_open()))
+
+    def _add_category_item(self, cat):
+        in_group = cat in self._band_group_cats()
+        item = QListWidgetItem(("  " if in_group else "") + str(cat))
+        item.setData(Qt.UserRole, {"cat": cat})
+        item.setToolTip(f"{cat} section")
+        self.cats.addItem(item)
+
+    def _category_order(self, categories):
+        categories = list(categories or [])
+        pref = ["Internet", "AIR-Net", "Telugu-Net", "India SDR FM"]
+        mode = self.cfg.get("section_sort", "Pinned first") if hasattr(self, "cfg") else "Pinned first"
+        if mode == "Name (A-Z)":
+            return sorted(categories, key=lambda x: str(x).lower())
+        if mode == "Favorites":
+            fav_cats = {f.get("cat") for f in self.cfg.get("station_favs", []) if isinstance(f, dict)}
+            return sorted(categories, key=lambda x: (x not in fav_cats, str(x).lower()))
+        pinned = [c for c in pref if c in categories]
+        rest = [c for c in categories if c not in pinned]
+        return pinned + sorted(rest, key=lambda x: str(x).lower())
+
+    def _populate_categories(self, categories=None):
+        categories = self._category_order(categories if categories is not None else self.stations.keys())
+        cur = self._cat_name_from_item(self.cats.currentItem()) if hasattr(self, "cats") else ""
+        band_cats = [c for c in self._band_group_cats() if c in categories]
+        visible_categories = [c for c in categories if c not in self._band_group_cats()]
+        self.cats.blockSignals(True)
+        self.cats.clear()
+        inserted_group = False
+        for cat in visible_categories:
+            self._add_category_item(cat)
+            if cat == "India SDR FM" and band_cats:
+                self._add_band_group_item()
+                inserted_group = True
+                if self._band_group_is_open():
+                    for band_cat in band_cats:
+                        self._add_category_item(band_cat)
+        if band_cats and not inserted_group:
+            self._add_band_group_item()
+            if self._band_group_is_open():
+                for band_cat in band_cats:
+                    self._add_category_item(band_cat)
+        self.cats.blockSignals(False)
+        visible_names = [self._cat_name_from_item(self.cats.item(i)) for i in range(self.cats.count())]
+        if cur and cur in visible_names:
+            self.cats.setCurrentRow(visible_names.index(cur))
+        elif self.cats.count():
+            self.cats.setCurrentRow(0)
+
+    def _current_cat_name(self):
+        return self._cat_name_from_item(self.cats.currentItem()) if hasattr(self, "cats") else ""
+
+    def _station_identity(self, cat, station):
+        station = station or {}
+        name = str(station.get("name", "") or "")
+        url = str(station.get("url", "") or "")
+        if not url and station.get("url_resolved"):
+            url = str(station.get("url_resolved") or "")
+        freq = str(station.get("freq", "") or "")
+        return (str(cat or ""), name, url, freq)
+
+    def _refresh_station_row_visuals(self):
+        if not hasattr(self, "stations_list"):
+            return
+        cat = getattr(self, "_visible_station_cat", "")
+        current = getattr(self, "_current_station_key", None)
+        for i in range(self.stations_list.count()):
+            item = self.stations_list.item(i)
+            row = self.stations_list.itemWidget(item)
+            if not isinstance(row, StationRow):
+                continue
+            station = item.data(Qt.UserRole)
+            playing = bool(isinstance(station, dict) and self._station_identity(cat, station) == current)
+            row._playing = playing
+            row.setProperty("playing", playing)
+            row.style().unpolish(row)
+            row.style().polish(row)
+            row._sync()
+
+    def _refresh_category_visuals(self):
+        if not hasattr(self, "cats"):
+            return
+        active_cat = getattr(self, "_current_station_cat", "")
+        for i in range(self.cats.count()):
+            item = self.cats.item(i)
+            data = item.data(Qt.UserRole)
+            if isinstance(data, dict) and data.get("group") == "sdr_bands":
+                item.setToolTip("Airband, Amateur, Marine, Shortwave")
+                row = self.cats.itemWidget(item)
+                if isinstance(row, BandGroupRow):
+                    row.setOpen(self._band_group_is_open())
+            else:
+                cat = self._cat_name_from_item(item)
+                item.setText(("  " if cat in self._band_group_cats() else "") + cat)
+                item.setToolTip(f"{cat} section")
+                active = cat == active_cat
+                item.setForeground(QColor("#30d158") if active else QColor("#f5f5f7" if self.dark else "#1d1d1f"))
+                item.setBackground(QColor(48, 209, 88, 32) if active else QColor(0, 0, 0, 0))
+                font = item.font()
+                font.setBold(False)
+                item.setFont(font)
+
+    def _on_category_clicked(self, item):
+        data = item.data(Qt.UserRole)
+        if isinstance(data, dict) and data.get("group") == "sdr_bands":
+            self._band_group_open = not self._band_group_is_open()
+            self._populate_categories()
+            self.stations_list.clear()
+            self.statusBar().showMessage("Expanded" if self._band_group_is_open() else "Collapsed")
+            return
+        cat = self._cat_name_from_item(item)
+        if not cat:
+            return
+        self.load_cat(cat)
+
+    def _on_category_current_changed(self, _text):
+        item = self.cats.currentItem()
+        data = item.data(Qt.UserRole) if item else None
+        if isinstance(data, dict) and data.get("group") == "sdr_bands":
+            self.stations_list.clear()
+            self._refresh_category_visuals()
+            return
+        cat = self._current_cat_name()
+        if not cat:
+            return
+        self.load_cat(cat)
+
     def _ui(self):
         self.setMinimumSize(1020, 660)
         self.resize(1120, 720)
@@ -912,7 +1278,7 @@ class App(QMainWindow):
         # Left
         left = QFrame()
         left.setObjectName("card")
-        left.setMinimumWidth(280)
+        left.setMinimumWidth(320)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(12, 12, 12, 12)
         ll.setSpacing(8)
@@ -950,12 +1316,11 @@ class App(QMainWindow):
         row = QHBoxLayout()
         self.cats = QListWidget()
         self.cats.setObjectName("cats")
-        self.cats.setFixedWidth(110)
+        self.cats.setFixedWidth(104)
         self.cats.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cats.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        for k in self.stations:
-            self.cats.addItem(k)
-        self.cats.currentTextChanged.connect(self.load_cat)
+        self.cats.currentTextChanged.connect(self._on_category_current_changed)
+        self.cats.itemClicked.connect(self._on_category_clicked)
         row.addWidget(self.cats)
         self.stations_list = QListWidget()
         self.stations_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -972,6 +1337,7 @@ class App(QMainWindow):
         self.stations_list.customContextMenuRequested.connect(self.stations_menu)
         row.addWidget(self.stations_list, 1)
         ll.addLayout(row, 1)
+        self._populate_categories()
         self.split.addWidget(left)
 
         # Center
@@ -1260,10 +1626,12 @@ class App(QMainWindow):
         lib_tabs = QTabWidget()
         self.hist = QListWidget()
         self.hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.hist.setMouseTracking(True)
         self.hist.itemDoubleClicked.connect(self.open_hist)
         lib_tabs.addTab(self.hist, "History")
         self.fav_list = QListWidget()
         self.fav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.fav_list.setMouseTracking(True)
         self.fav_list.itemDoubleClicked.connect(self.open_fav)
         self.fav_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.fav_list.customContextMenuRequested.connect(self.fav_menu)
@@ -1482,12 +1850,24 @@ class App(QMainWindow):
                 QLabel#toast { background:#f5f5f7; color:#1d1d1f; border-radius:14px; padding:12px 16px; }
                 QPushButton#play { background:#30d158; color:#000; border:none; border-radius:22px; }
                 QPushButton#icon { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:21px; }
+                QPushButton#icon:hover { background:#3a3a3c; }
                 QPushButton#icon:checked { background:#30d158; color:#000; }
                 QPushButton#icon:disabled { color:#636366; }
                 QPushButton#ccBtn { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:21px;
                     font-weight:800; font-size:11px; }
                 QPushButton#ccBtn:checked { background:#30d158; color:#000; }
                 QPushButton#pill { background:#2c2c2e; color:#f5f5f7; border:none; border-radius:14px; padding:10px; }
+                QPushButton#stationHeart { background:transparent; border:none; border-radius:13px; padding:0; }
+                QPushButton#stationHeart:hover { background:rgba(255,255,255,0.07); }
+                QPushButton#stationHeart:checked { background:rgba(48,209,88,0.14); }
+                QWidget#stationRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
+                QWidget#stationRow[hovered="true"] { background:rgba(48,209,88,0.12); border-left:2px solid rgba(48,209,88,0.75); }
+                QWidget#stationRow[playing="true"] { background:rgba(48,209,88,0.14); border-left:2px solid #30d158; }
+                QWidget#libraryRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
+                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.12); border-left:2px solid rgba(48,209,88,0.75); }
+                QLabel#stationText { background:transparent; border:none; padding:0; }
+                QWidget#bandGroupRow { background:transparent; }
+                QLabel#bandGroupIcon { background:transparent; color:#f5f5f7; font-size:20px; font-weight:700; }
                 QPushButton#navBtn {
                     background: transparent;
                     border: none;
@@ -1506,11 +1886,14 @@ class App(QMainWindow):
                 }
 
                 QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#8e8e93; padding:4px 0; }
-                QListWidget { background: transparent; border: none; outline: none; }
-                QListWidget::item { padding:9px 10px; border-radius:10px; }
-                QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
-                QListWidget::item:hover { background: rgba(255,255,255,0.06); border-radius: 8px; }
-                QComboBox, QDoubleSpinBox { background:transparent; border:none; border-radius:10px; padding:7px 10px; color:#f5f5f7; }
+                QListWidget { background: transparent; border: none; outline: none; alternate-background-color: transparent; }
+                QListWidget::item { min-height:34px; padding:0; border-radius:8px; margin:1px 0; }
+                QListWidget::item:selected { background: transparent; color: #f5f5f7; border-radius: 8px; }
+                QListWidget::item:hover { background: transparent; border-radius: 8px; }
+                QListWidget#cats::item:selected { background: rgba(48,209,88,0.16); color:#30d158; }
+                QListWidget#cats::item:hover { background: rgba(255,255,255,0.035); border-radius:8px; }
+                QListWidget#cats::item { font-weight:600; }
+                QComboBox, QDoubleSpinBox { background:#1c1c1e; border:1px solid #2c2c2e; border-radius:8px; padding:7px 10px; color:#f5f5f7; }
                 QTextEdit { background:#2c2c2e; border:none; border-radius:12px; color:#f5f5f7; }
                 QSplitter::handle { background:#2c2c2e; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#8e8e93; padding:8px 12px; }
@@ -1534,12 +1917,24 @@ class App(QMainWindow):
                 QLabel#toast { background:#1d1d1f; color:#f5f5f7; border-radius:14px; padding:12px 16px; }
                 QPushButton#play { background:#30d158; color:#fff; border:none; border-radius:22px; }
                 QPushButton#icon { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:21px; }
+                QPushButton#icon:hover { background:#e5e5ea; }
                 QPushButton#icon:checked { background:#30d158; color:#fff; }
                 QPushButton#icon:disabled { color:#aeaeb2; }
                 QPushButton#ccBtn { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:21px;
                     font-weight:800; font-size:11px; }
                 QPushButton#ccBtn:checked { background:#30d158; color:#fff; }
                 QPushButton#pill { background:#f2f2f7; color:#1d1d1f; border:none; border-radius:14px; padding:10px; }
+                QPushButton#stationHeart { background:transparent; border:none; border-radius:13px; padding:0; }
+                QPushButton#stationHeart:hover { background:rgba(0,0,0,0.045); }
+                QPushButton#stationHeart:checked { background:rgba(48,209,88,0.16); }
+                QWidget#stationRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
+                QWidget#stationRow[hovered="true"] { background:rgba(48,209,88,0.16); border-left:2px solid rgba(48,209,88,0.75); }
+                QWidget#stationRow[playing="true"] { background:rgba(48,209,88,0.18); border-left:2px solid #30d158; }
+                QWidget#libraryRow { background:transparent; border-left:2px solid transparent; border-radius:7px; }
+                QWidget#libraryRow[hovered="true"] { background:rgba(48,209,88,0.16); border-left:2px solid rgba(48,209,88,0.75); }
+                QLabel#stationText { background:transparent; border:none; padding:0; }
+                QWidget#bandGroupRow { background:transparent; }
+                QLabel#bandGroupIcon { background:transparent; color:#1d1d1f; font-size:20px; font-weight:700; }
                 QPushButton#navBtn {
                     background: transparent;
                     border: none;
@@ -1558,11 +1953,14 @@ class App(QMainWindow):
                 }
 
                 QPushButton#collapseBtn { background:transparent; border:none; text-align:left; font-weight:600; color:#6e6e73; padding:4px 0; }
-                QListWidget { background: transparent; border: none; outline: none; }
-                QListWidget::item { padding:9px 10px; border-radius:10px; }
-                QListWidget::item:selected { background: rgba(48, 209, 88, 0.35); color: #0b3d0b; border-radius: 8px; }
-                QListWidget::item:hover { background: rgba(0,0,0,0.04); border-radius: 8px; }
-                QComboBox, QDoubleSpinBox { background:transparent; border:none; border-radius:10px; padding:7px 10px; }
+                QListWidget { background: transparent; border: none; outline: none; alternate-background-color: transparent; }
+                QListWidget::item { min-height:34px; padding:0; border-radius:8px; margin:1px 0; }
+                QListWidget::item:selected { background: transparent; color: #1d1d1f; border-radius: 8px; }
+                QListWidget::item:hover { background: transparent; border-radius: 8px; }
+                QListWidget#cats::item:selected { background: rgba(48,209,88,0.18); color:#0b7f2a; }
+                QListWidget#cats::item:hover { background: rgba(0,0,0,0.03); border-radius:8px; }
+                QListWidget#cats::item { font-weight:600; }
+                QComboBox, QDoubleSpinBox { background:#fff; border:1px solid #e5e5ea; border-radius:8px; padding:7px 10px; }
                 QTextEdit { background:#f2f2f7; border:none; border-radius:12px; }
                 QSplitter::handle { background:#e5e5ea; width:4px; border-radius:2px; }
                 QTabBar::tab { color:#6e6e73; padding:8px 12px; }
@@ -1742,61 +2140,129 @@ class App(QMainWindow):
         self._highlight_station_for_freq(v)
 
     def load_cat(self, cat):
+        cat_name = self._cat_name_from_item(self.cats.currentItem()) or self._cat_name_from_item(cat)
+        if hasattr(self, "sort_combo"):
+            pref = self.cfg.get("sort_prefs", {}).get(cat_name, "Name (A-Z)")
+            if self.sort_combo.currentText() != pref:
+                self.sort_combo.blockSignals(True)
+                self.sort_combo.setCurrentText(pref)
+                self.sort_combo.blockSignals(False)
+        self._refresh_category_visuals()
+         
         # Top-level Internet mode tab → radio-browser categories
         if getattr(self, "left_mode", None) is not None and self.left_mode.currentIndex() == 1:
-            if cat:
-                self._load_internet_cat(cat)
+            if cat_name:
+                self._load_internet_cat(cat_name)
             self._apply_stream_mode(True)
             return
         # AIR-Net: consolidated All India Radio internet channels
-        if cat and str(cat).strip().lower() in ("air-net", "air net", "airnet"):
+        if cat_name and str(cat_name).strip().lower() in ("air-net", "air net", "airnet"):
             self._apply_stream_mode(True)
             self._ensure_air_net_category(save=False)
-            self._fill_stations_list(self.stations.get("AIR-Net") or AIR_NET_SEED)
-            self.statusBar().showMessage("AIR-Net: loading All India Radio streams…")
-            self._refresh_air_net_from_internet()
+            self._load_special_net_category("AIR-Net", AIR_NET_SEED, self._refresh_air_net_from_internet)
             return
         # Telugu-Net: consolidated Telugu-language internet channels
-        if cat and str(cat).strip().lower() in ("telugu-net", "telugu net", "telugunet"):
+        if cat_name and str(cat_name).strip().lower() in ("telugu-net", "telugu net", "telugunet"):
             self._apply_stream_mode(True)
             self._ensure_telugu_net_category(save=False)
-            self._fill_stations_list(self.stations.get("Telugu-Net") or TELUGU_NET_SEED)
-            self.statusBar().showMessage("Telugu-Net: loading Telugu-language streams…")
-            self._refresh_telugu_net_from_internet()
+            self._load_special_net_category("Telugu-Net", TELUGU_NET_SEED, self._refresh_telugu_net_from_internet)
             return
         self.stations_list.blockSignals(True)
         self.stations_list.clear()
-        if not cat or cat not in self.stations:
+        if not cat_name or cat_name not in self.stations:
             self.stations_list.blockSignals(False)
             return
-        self._fill_stations_list(self.stations[cat], clear=False)
+        self._fill_stations_list(self.stations[cat_name], clear=False, cat=cat_name)
         self.stations_list.blockSignals(False)
         # SDR-side "Internet" / stream categories → internet player layout
-        self._apply_stream_mode(self._cat_is_internet(cat))
+        self._apply_stream_mode(self._cat_is_internet(cat_name))
         try:
-            if not self._cat_is_internet(cat):
+            if not self._cat_is_internet(cat_name):
                 self._highlight_station_for_freq(self.freq.value())
         except Exception:
             pass
 
-    def _fill_stations_list(self, items, clear=True):
-        """Populate the station list from a list of station dicts."""
+    def _load_special_net_category(self, cat, seed, refresh_fn):
+        items = self.stations.get(cat) or seed
+        if self._visible_station_cat != cat or self.stations_list.count() == 0:
+            self._fill_stations_list(items, cat=cat)
+        self.statusBar().showMessage(f"{cat}: {len(items)} stations")
+        if cat in self._special_net_refreshed or cat in self._special_net_refreshing:
+            return
+        self._special_net_refreshing.add(cat)
+        refresh_fn()
+
+    def _fill_stations_list(self, items, clear=True, cat=None, sort_type=None):
+        """Populate the station list from a list of station dicts.
+        Favorites are sorted to top; others sorted by sort_type."""
+        self._visible_station_cat = cat or ""
         if clear:
             self.stations_list.blockSignals(True)
             self.stations_list.clear()
-        for s in items or []:
+        
+        if not sort_type and cat:
+            sort_type = self.cfg.get("sort_prefs", {}).get(cat, "Name (A-Z)")
+        if not sort_type:
+            sort_type = "Name (A-Z)"
+        
+        indexed = [(idx, s) for idx, s in enumerate(items or []) if isinstance(s, dict)]
+
+        def sort_key(row):
+            idx, s = row
+            name = str(s.get("name", "")).lower()
+            if sort_type == "Recently Added":
+                return (-idx, name)
+            if sort_type == "Popularity":
+                return (-(int(s.get("votes") or s.get("clickcount") or 0)), name)
+            if s.get("freq"):
+                try:
+                    freq = float(s.get("freq"))
+                except Exception:
+                    freq = 0.0
+                return (name, freq)
+            return (name, 0)
+
+        favs = []
+        others = []
+        for idx, s in indexed:
             if not isinstance(s, dict):
                 continue
             name = str(s.get("name", "?"))
+            if cat and self.is_station_favorite(cat, name, s):
+                favs.append((idx, s))
+            else:
+                others.append((idx, s))
+
+        for _, s in sorted(favs, key=sort_key) + sorted(others, key=sort_key):
+            name = str(s.get("name", "?"))
             if s.get("url"):
-                it = QListWidgetItem(f"{name}  ·  net")
+                suffix = s.get("country") or "net"
+                text = f"{name}  ·  {suffix}"
+                it = QListWidgetItem()
                 it.setToolTip(f"{name}\n{s.get('url')}")
             else:
                 freq = s.get("freq", 0)
-                it = QListWidgetItem(f"{name}  ·  {freq}")
+                text = f"{name}  ·  {freq}"
+                it = QListWidgetItem()
                 it.setToolTip(f"{name}  ·  {freq} MHz  ·  {str(s.get('mode','')).upper()}")
             it.setData(Qt.UserRole, s)
+            favored = bool(cat and self.is_station_favorite(cat, name, s))
+            playing = bool(cat and self._station_identity(cat, s) == getattr(self, "_current_station_key", None))
+            if favored:
+                it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Favorite")
+            if playing:
+                it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Now playing")
             self.stations_list.addItem(it)
+            row = StationRow(
+                text,
+                favored=favored,
+                playing=playing,
+                on_toggle=lambda st=s, c=cat: self._toggle_station_favorite_from_row(c, st),
+                on_play=lambda st=s, c=cat: self._play_station_data(st, c),
+            )
+            it.setSizeHint(QSize(0, 36))
+            self.stations_list.setItemWidget(it, row)
+        
         if clear:
             self.stations_list.blockSignals(False)
 
@@ -1859,10 +2325,6 @@ class App(QMainWindow):
                 stations = self._fetch_air_net_stations()
                 if not stations:
                     self.sig.log.emit("AIR-Net: no online results — using seed list")
-                    self.sig.net_list.emit(
-                        [{"name": s["name"], "url": s["url"], "favicon": s.get("favicon")} for s in AIR_NET_SEED],
-                        "AIR-Net",
-                    )
                     return
                 self.stations["AIR-Net"] = stations
                 try:
@@ -1870,22 +2332,11 @@ class App(QMainWindow):
                 except Exception:
                     pass
                 self.sig.log.emit(f"AIR-Net: {len(stations)} All India Radio streams")
-                self.sig.net_list.emit(
-                    [
-                        {
-                            "name": s["name"],
-                            "url": s["url"],
-                            "url_resolved": s["url"],
-                            "favicon": s.get("favicon") or "",
-                            "countrycode": "IN",
-                        }
-                        for s in stations
-                    ],
-                    "AIR-Net",
-                )
             except Exception as e:
                 self.sig.log.emit(f"AIR-Net refresh error: {e}")
-                self.sig.net_list.emit([], f"AIR-Net error: {e}")
+            finally:
+                self._special_net_refreshing.discard("AIR-Net")
+                self._special_net_refreshed.add("AIR-Net")
 
         threading.Thread(target=work, daemon=True, name="air-net-refresh").start()
 
@@ -1994,10 +2445,6 @@ class App(QMainWindow):
                 stations = self._fetch_telugu_net_stations()
                 if not stations:
                     self.sig.log.emit("Telugu-Net: no online results — using seed list")
-                    self.sig.net_list.emit(
-                        [{"name": s["name"], "url": s["url"], "favicon": s.get("favicon")} for s in TELUGU_NET_SEED],
-                        "Telugu-Net",
-                    )
                     return
                 self.stations["Telugu-Net"] = stations
                 try:
@@ -2005,22 +2452,11 @@ class App(QMainWindow):
                 except Exception:
                     pass
                 self.sig.log.emit(f"Telugu-Net: {len(stations)} Telugu-language streams")
-                self.sig.net_list.emit(
-                    [
-                        {
-                            "name": s["name"],
-                            "url": s["url"],
-                            "url_resolved": s["url"],
-                            "favicon": s.get("favicon") or "",
-                            "countrycode": "IN",
-                        }
-                        for s in stations
-                    ],
-                    "Telugu-Net",
-                )
             except Exception as e:
                 self.sig.log.emit(f"Telugu-Net refresh error: {e}")
-                self.sig.net_list.emit([], f"Telugu-Net error: {e}")
+            finally:
+                self._special_net_refreshing.discard("Telugu-Net")
+                self._special_net_refreshed.add("Telugu-Net")
 
         threading.Thread(target=work, daemon=True, name="telugu-net-refresh").start()
 
@@ -2141,11 +2577,11 @@ class App(QMainWindow):
 
     def stations_menu(self, pos):
         item = self.stations_list.itemAt(pos)
-        cat_item = self.cats.currentItem()
-        if not cat_item:
+        cat = self._current_cat_name()
+        if not cat:
             return
-        cat = cat_item.text()
         menu = QMenu(self)
+        s = item.data(Qt.UserRole) if item else None
         act_add = menu.addAction("Add station…")
         act_add_net = menu.addAction("Add internet station…")
         act_ren = menu.addAction("Rename…")
@@ -2187,10 +2623,11 @@ class App(QMainWindow):
             save_json(STATIONS_F, self.stations)
             self.load_cat(cat)
             return
-        s = item.data(Qt.UserRole) if item else None
         if not isinstance(s, dict):
             return
         def _match(st):
+            if st.get("url") or s.get("url"):
+                return st.get("name") == s.get("name") and st.get("url") == s.get("url")
             return st.get("name") == s.get("name") and float(st.get("freq", 0)) == float(s.get("freq", 0))
         if chosen == act_ren:
             name, ok = QInputDialog.getText(self, "Rename", "Name:", text=s.get("name", ""))
@@ -2250,10 +2687,7 @@ class App(QMainWindow):
             self.load_cat(cat)
 
     def _stations_reordered(self, *args):
-        cat_item = self.cats.currentItem()
-        if not cat_item:
-            return
-        cat = cat_item.text()
+        cat = self._current_cat_name()
         if cat not in self.stations:
             return
         ordered = []
@@ -2269,16 +2703,26 @@ class App(QMainWindow):
         s = item.data(Qt.UserRole)
         if not s:
             return
+        self._play_station_data(s, self._current_cat_name())
+
+    def _play_station_data(self, station, cat=""):
+        s = station
+        if not isinstance(s, dict):
+            return
+        self._current_station_cat = cat or self._current_cat_name()
+        self._current_station_key = self._station_identity(self._current_station_cat, s)
+        if self._current_station_cat in self._band_group_cats():
+            self._populate_categories()
+        self._refresh_category_visuals()
+        self._refresh_station_row_visuals()
         # Internet stream
         if s.get("url"):
             self._apply_stream_mode(True)
-            # Get current category
-            cat = self.cats.currentItem().text() if self.cats.currentItem() else ""
             self.play_stream(
                 s.get("url"),
                 s.get("name", "Stream"),
                 favicon=s.get("favicon") or s.get("logo") or s.get("favicon_url"),
-                category=cat,
+                category=self._current_station_cat,
             )
             return
         # RF station — restore SDR player/tuner if we were in stream UI
@@ -2922,6 +3366,28 @@ class App(QMainWindow):
             pass
         return "default.monitor"
 
+    def _apply_sort(self, sort_type):
+        """Apply sorting to current category's station list."""
+        cat_name = self._current_cat_name()
+        source = self.stations.get(cat_name) or self._view_items_by_cat.get(cat_name)
+        if not source:
+            return
+         
+        # Save preference
+        self.cfg.setdefault("sort_prefs", {})[cat_name] = sort_type
+        self._save_config()
+         
+        # Reload list with new sort
+        self._fill_stations_list(source, cat=cat_name, sort_type=sort_type)
+
+    def _apply_section_sort(self, sort_type):
+        self.cfg["section_sort"] = sort_type
+        self._save_config()
+        self._populate_categories()
+        cur = self._current_cat_name()
+        if cur:
+            self.load_cat(cur)
+
     def _start_icy(self, url: str):
         """Optional: also watch ICY StreamTitle (metadata), not speech."""
         self._stop_icy()
@@ -2981,6 +3447,73 @@ class App(QMainWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ==================== FAVORITES MANAGEMENT ====================
+    def _station_fav_key(self, cat, name, station=None):
+        station = station or {}
+        return {
+            "cat": str(cat or ""),
+            "name": str(name or station.get("name", "")),
+            "url": str(station.get("url", "") or ""),
+            "freq": str(station.get("freq", "") or ""),
+        }
+
+    def is_station_favorite(self, cat, name, station=None):
+        """Check if a station is favorited."""
+        key = self._station_fav_key(cat, name, station)
+        for fav in self.cfg.get("station_favs", []):
+            if fav.get("cat") != key["cat"] or fav.get("name") != key["name"]:
+                continue
+            if fav.get("url") or fav.get("freq"):
+                if str(fav.get("url", "")) == key["url"] and str(fav.get("freq", "")) == key["freq"]:
+                    return True
+                continue
+            if not key["url"] and not key["freq"]:
+                return True
+            return True
+        return False
+
+    def toggle_station_favorite(self, cat, name, station=None):
+        """Toggle favorite status for a station."""
+        fav_list = self.cfg.setdefault("station_favs", [])
+        key = self._station_fav_key(cat, name, station)
+        is_fav = self.is_station_favorite(cat, name, station)
+        
+        if is_fav:
+            fav_list[:] = [
+                f for f in fav_list
+                if not (
+                    f.get("cat") == key["cat"] and f.get("name") == key["name"] and
+                    (not f.get("url") or str(f.get("url", "")) == key["url"]) and
+                    (not f.get("freq") or str(f.get("freq", "")) == key["freq"])
+                )
+            ]
+        else:
+            fav_list.insert(0, key)
+        
+        self._save_config()
+        return not is_fav
+
+    def _toggle_station_favorite_from_row(self, cat, station):
+        if not isinstance(station, dict) or not cat:
+            return
+        name = station.get("name", "Station")
+        added = self.toggle_station_favorite(cat, name, station)
+        self._fill_stations_list(self.stations.get(cat) or self._view_items_by_cat.get(cat, []), cat=cat)
+        for i in range(self.stations_list.count()):
+            it = self.stations_list.item(i)
+            data = it.data(Qt.UserRole)
+            if isinstance(data, dict) and data.get("name") == name:
+                self.stations_list.setCurrentRow(i)
+                break
+        self.toast.show_msg(("Favorited " if added else "Unfavorited ") + str(name))
+        self._refresh_category_visuals()
+
+    def _save_config(self):
+        """Save config to file."""
+        import json
+        with open(CONFIG, "w") as f:
+            json.dump(self.cfg, f, indent=2)
+
     def clear_song(self):
         self.song = None
         self.genius_url = None
@@ -3022,6 +3555,14 @@ class App(QMainWindow):
                 self.sp_title.setText(name or "Playing")
                 self.sp_sub.setText(detail)
         else:
+            self._current_station_cat = ""
+            self._current_station_key = None
+            try:
+                self._populate_categories()
+            except Exception:
+                pass
+            self._refresh_category_visuals()
+            self._refresh_station_row_visuals()
             self.btn_play.setIcon(load_icon("play"))
             if hasattr(self, "sp_play"):
                 self.sp_play.setIcon(load_icon("play"))
@@ -3150,6 +3691,11 @@ class App(QMainWindow):
             self.stop()
         except Exception:
             pass
+        if category:
+            self._current_station_cat = category
+            self._current_station_key = self._station_identity(category, {"name": name, "url": url})
+            self._refresh_category_visuals()
+            self._refresh_station_row_visuals()
         self.stop_id()
         self.clear_song()
         detail = "Internet stream"
@@ -3756,20 +4302,28 @@ class App(QMainWindow):
         for s in self.history:
             artist = s.get("artist") or "?"
             title = s.get("title") or "?"
-            it = QListWidgetItem(f"{title}  ·  {artist}")
+            text = f"{title}  ·  {artist}"
+            it = QListWidgetItem()
             it.setToolTip(f"{artist} — {title}")
             it.setData(Qt.UserRole, s)
             self.hist.addItem(it)
+            row = LibraryRow(text, on_open=lambda item=it: self.open_hist(item))
+            it.setSizeHint(QSize(0, 36))
+            self.hist.setItemWidget(it, row)
 
     def refresh_favs(self):
         self.fav_list.clear()
         for s in self.favs:
             artist = s.get("artist") or "?"
             title = s.get("title") or "?"
-            it = QListWidgetItem(f"{title}  ·  {artist}")
+            text = f"{title}  ·  {artist}"
+            it = QListWidgetItem()
             it.setToolTip(f"{artist} — {title}")
             it.setData(Qt.UserRole, s)
             self.fav_list.addItem(it)
+            row = LibraryRow(text, on_open=lambda item=it: self.open_fav(item))
+            it.setSizeHint(QSize(0, 36))
+            self.fav_list.setItemWidget(it, row)
 
     def open_hist(self, item):
         s = item.data(Qt.UserRole)
@@ -4338,7 +4892,7 @@ class App(QMainWindow):
             cat = None
             try:
                 it = self.cats.currentItem()
-                cat = it.text() if it else None
+                cat = self._cat_name_from_item(it) if it else None
             except Exception:
                 cat = None
             self._apply_stream_mode(self._cat_is_internet(cat) if cat else False)
@@ -4351,33 +4905,21 @@ class App(QMainWindow):
                 self._init_internet_categories()
                 self._net_ready = True
             # Populate cats with net categories
-            self.cats.blockSignals(True)
-            self.cats.clear()
-            for c in getattr(self, "_net_categories", []):
-                self.cats.addItem(c)
-            self.cats.blockSignals(False)
+            self._populate_categories(getattr(self, "_net_categories", []))
             if self.cats.count():
                 self.cats.setCurrentRow(0)
-                self._load_internet_cat(self.cats.currentItem().text())
+                cat = self._current_cat_name()
+                if cat:
+                    self._load_internet_cat(cat)
         else:
             # Restore SDR categories (keep AIR-Net near Internet)
             self._ensure_air_net_category(save=True)
-            self.cats.blockSignals(True)
-            self.cats.clear()
-            keys = list(self.stations.keys())
-            # Preferred order: Internet, AIR-Net, Telugu-Net, then the rest alphabetically-ish as stored
-            ordered = []
-            for pref in ("Internet", "AIR-Net", "Telugu-Net"):
-                if pref in keys:
-                    ordered.append(pref)
-                    keys.remove(pref)
-            ordered.extend(keys)
-            for k in ordered:
-                self.cats.addItem(k)
-            self.cats.blockSignals(False)
+            self._ensure_telugu_net_category(save=True)
+            self._normalize_station_sections(save=True)
+            self._populate_categories()
             if self.cats.count():
                 self.cats.setCurrentRow(0)
-                self.load_cat(self.cats.currentItem().text())
+                self.load_cat(self._current_cat_name())
 
     def _init_internet_categories(self):
         """Popular genres + India focus – stations loaded on demand from radio-browser."""
@@ -4418,12 +4960,8 @@ class App(QMainWindow):
 
 
     def _on_net_list(self, stations, label):
-        self.stations_list.clear()
-        if not stations:
-            self.stations_list.addItem(label or "No stations")
-            self.statusBar().showMessage(label or "No stations")
-            return
-        for s in stations:
+        rows = []
+        for s in stations or []:
             if not isinstance(s, dict):
                 continue
             name = (s.get("name") or "Station").strip()
@@ -4431,31 +4969,44 @@ class App(QMainWindow):
             if not url:
                 continue
             country = s.get("countrycode") or s.get("country") or ""
-            text = f"{name}  ·  {country}" if country else name
-            it = QListWidgetItem(text)
             favicon = (s.get("favicon") or "").strip() or None
-            it.setToolTip(f"{name}\n{url}")
-            it.setData(Qt.UserRole, {
+            row = {
                 "name": name, "url": url, "mode": "net", "favicon": favicon,
-            })
-            self.stations_list.addItem(it)
+                "country": country, "votes": s.get("votes") or 0,
+            }
+            rows.append(row)
             # Cache logo in background when list loads
             if favicon and name:
                 threading.Thread(
                     target=self._ensure_station_art, args=(name, favicon), daemon=True
                 ).start()
+        self._view_items_by_cat[label] = rows
+        if label not in ("AIR-Net", "Telugu-Net") and hasattr(self, "_net_cache"):
+            self._net_cache[label] = rows
+        if label != self._current_cat_name():
+            return
+        if not rows:
+            self.stations_list.clear()
+            self._visible_station_cat = label or ""
+            self.stations_list.addItem(label or "No stations")
+            self.statusBar().showMessage(label or "No stations")
+            return
+        self._fill_stations_list(rows, cat=label)
         self.statusBar().showMessage(f"Internet: {self.stations_list.count()} – {label}")
 
     def _load_internet_cat(self, cat):
+        if cat == self._visible_station_cat and self.stations_list.count() > 0:
+            self.statusBar().showMessage(f"Internet: {self.stations_list.count()} – {cat}")
+            return
+        if cat in getattr(self, "_net_cache", {}):
+            self._on_net_list(self._net_cache[cat], cat)
+            return
         self.stations_list.clear()
         self.stations_list.addItem("Loading…")
         self.statusBar().showMessage(f"Loading {cat}…")
 
         def work():
             try:
-                if cat in getattr(self, "_net_cache", {}):
-                    self.sig.net_list.emit(self._net_cache[cat], cat)
-                    return
                 if cat == "Search…":
                     self.sig.net_list.emit([], "Search…")
                     return
