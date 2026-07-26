@@ -566,7 +566,7 @@ class StationRow(QWidget):
         self.label = QLabel(self._text)
         self.label.setObjectName("stationText")
         self.label.setAutoFillBackground(False)
-        self.label.setMinimumWidth(self._text_width())
+        self.label.setMinimumWidth(0)
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.label.setTextInteractionFlags(Qt.NoTextInteraction)
         row.addWidget(self.label, 1)
@@ -587,16 +587,7 @@ class StationRow(QWidget):
         self._heart_anim.setDuration(130)
         self._heart_anim.setEasingCurve(QEasingCurve.OutCubic)
         row.addWidget(self.heart)
-        self.setMinimumWidth(self.required_width())
         self._sync()
-
-    def _text_width(self):
-        fm = QFontMetrics(self.label.font())
-        return fm.horizontalAdvance(self._text) + fm.horizontalAdvance("MM")
-
-    def required_width(self):
-        margins = self.layout().contentsMargins()
-        return self._text_width() + margins.left() + margins.right() + self.layout().spacing() + self.heart.width()
 
     def _sync(self):
         self.heart.setChecked(self._favored)
@@ -639,9 +630,8 @@ class StationRow(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self.label.setMinimumWidth(self._text_width())
-        if self.label.text() != self._text:
-            self.label.setText(self._text)
+        fm = QFontMetrics(self.label.font())
+        self.label.setText(fm.elidedText(self._text, Qt.ElideRight, max(20, self.label.width())))
 
 
 class LibraryRow(QWidget):
@@ -1194,34 +1184,6 @@ class App(QMainWindow):
             font.setBold(False)
             item.setFont(font)
 
-    def _station_row_required_width(self, text):
-        fm = QFontMetrics(self.stations_list.font())
-        padding = fm.horizontalAdvance("MM")
-        return fm.horizontalAdvance(str(text)) + padding + 10 + 5 + 6 + 26 + 8
-
-    def _fit_station_list_width(self, texts):
-        if not texts or not hasattr(self, "left_lists_split"):
-            return
-        required = max(self._station_row_required_width(t) for t in texts)
-        required = max(120, required)
-        cat_width = self.cats.width() if hasattr(self, "cats") and self.cats.width() > 0 else 112
-        cat_width = max(self.cats.minimumWidth(), min(self.cats.maximumWidth(), cat_width))
-        handle = self.left_lists_split.handleWidth()
-        panel_margins = 24
-        panel_width = max(320, cat_width + required + handle + panel_margins)
-        self.stations_list.setMinimumWidth(required)
-        if hasattr(self, "left_panel"):
-            self.left_panel.setMinimumWidth(panel_width)
-        self.left_lists_split.setSizes([cat_width, required])
-        if hasattr(self, "split"):
-            sizes = self.split.sizes()
-            if sizes:
-                total = sum(sizes)
-                left_width = max(panel_width, sizes[0])
-                if total > left_width:
-                    sizes[0] = left_width
-                    self.split.setSizes(sizes)
-
     def _on_category_clicked(self, item):
         cat = self._cat_name_from_item(item)
         if not cat:
@@ -1252,7 +1214,6 @@ class App(QMainWindow):
 
         # Left
         left = QFrame()
-        self.left_panel = left
         left.setObjectName("card")
         left.setMinimumWidth(320)
         ll = QVBoxLayout(left)
@@ -1307,7 +1268,7 @@ class App(QMainWindow):
         self.stations_list.setMinimumWidth(120)
         self.stations_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.stations_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.stations_list.setTextElideMode(Qt.ElideNone)
+        self.stations_list.setTextElideMode(Qt.ElideRight)
         self.stations_list.setMouseTracking(True)
         self.stations_list.itemClicked.connect(self.play_item)
         self.stations_list.setDragEnabled(True)
@@ -2238,7 +2199,6 @@ class App(QMainWindow):
             else:
                 others.append((idx, s))
 
-        visible_texts = []
         for _, s in sorted(favs, key=sort_key) + sorted(others, key=sort_key):
             name = str(s.get("name", "?"))
             if s.get("url"):
@@ -2258,7 +2218,6 @@ class App(QMainWindow):
                 it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Favorite")
             if playing:
                 it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + "Now playing")
-            visible_texts.append(text)
             self.stations_list.addItem(it)
             row = StationRow(
                 text,
@@ -2267,9 +2226,8 @@ class App(QMainWindow):
                 on_toggle=lambda st=s, c=cat: self._toggle_station_favorite_from_row(c, st),
                 on_play=lambda st=s, c=cat: self._play_station_data(st, c),
             )
-            it.setSizeHint(QSize(row.required_width(), 36))
+            it.setSizeHint(QSize(0, 36))
             self.stations_list.setItemWidget(it, row)
-        self._fit_station_list_width(visible_texts)
         
         if clear:
             self.stations_list.blockSignals(False)
